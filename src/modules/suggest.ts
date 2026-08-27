@@ -10,6 +10,7 @@
  */
 
 import type { TrendingKeyword } from '../types.js';
+import { fetchJson } from './http.js';
 
 /** 前缀模式词（游戏攻略场景的高价值提问词） */
 export const SUGGEST_PATTERNS = [
@@ -28,15 +29,12 @@ function sleep(ms: number): Promise<void> {
 /**
  * 单次 suggest 请求：返回 Google 自动补全的建议列表
  * client=firefox 返回纯 JSON（[query, [suggestions]]）
+ * 注意：必须走 http.ts 的 fetchJson（undici ProxyAgent 显式代理），
+ * 裸 fetch 的代理通道对 suggestqueries.google.com 会挂起超时
  */
 async function fetchSuggest(q: string): Promise<string[]> {
   const url = `https://suggestqueries.google.com/complete/search?client=firefox&hl=en&q=${encodeURIComponent(q)}`;
-  const res = await fetch(url, {
-    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Firefox/130.0' },
-    signal: AbortSignal.timeout(10000),
-  });
-  if (!res.ok) throw new Error(`suggest HTTP ${res.status}`);
-  const data = (await res.json()) as [string, string[]];
+  const data = await fetchJson<[string, string[]]>(url);
   return data[1] ?? [];
 }
 
@@ -56,41 +54,45 @@ async function suggestByPattern(seed: string, pattern: string): Promise<string[]
 }
 
 /**
- * 对单个种子执行完整免费挖掘：
- *   1. 逐字符递进（36 请求）
+ * 对单个种子执行免费挖掘：
+ *   1. 逐字符递进（36 请求）——默认开启，挖完整长尾
  *   2. 前缀模式（12 请求）
- * 共约 48 个免费请求，返回去重后的长尾词列表。
  *
- * @param seed  种子词（通常是游戏名）
+ * @param seed  种子词（游戏名用完整递进，泛词根建议 patternsOnly）
  * @param delayMs 请求间隔（默认 150ms，避免触发限流）
+ * @param options.patternsOnly 只跑前缀模式（12 请求）：泛词根（如 online game）
+ *        的字符递进会挖出海量噪声长尾，前缀模式已覆盖高价值提问词
  */
 export async function suggestMine(
   seed: string,
   delayMs = 150,
+  options: { patternsOnly?: boolean } = {},
 ): Promise<TrendingKeyword[]> {
   const found = new Map<string, TrendingKeyword>();
 
-  // 1. 字符递进
-  for (const ch of CHARS) {
-    try {
-      const list = await suggestByChar(seed, ch);
-      for (const kw of list) {
-        const key = kw.toLowerCase().trim();
-        if (key && !found.has(key)) {
-          found.set(key, {
-            keyword: key,
-            seedWord: seed,
-            source: 'suggest',
-            trendType: 'rising',
-            growthPercent: 0,
-            discoveredAt: new Date(),
-          });
+  // 1. 字符递进（patternsOnly 时跳过）
+  if (!options.patternsOnly) {
+    for (const ch of CHARS) {
+      try {
+        const list = await suggestByChar(seed, ch);
+        for (const kw of list) {
+          const key = kw.toLowerCase().trim();
+          if (key && !found.has(key)) {
+            found.set(key, {
+              keyword: key,
+              seedWord: seed,
+              source: 'suggest',
+              trendType: 'rising',
+              growthPercent: 0,
+              discoveredAt: new Date(),
+            });
+          }
         }
+      } catch {
+        // 单字符请求失败忽略，继续下一个
       }
-    } catch {
-      // 单字符请求失败忽略，继续下一个
+      await sleep(delayMs);
     }
-    await sleep(delayMs);
   }
 
   // 2. 前缀模式

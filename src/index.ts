@@ -35,7 +35,9 @@ import {
   acceptWord,
   rejectWord,
   updateRequirementStatus,
+  countUnverifiedWords,
 } from './core/db.js';
+import { runInnerLoop, runOuterLoop } from './modules/radar.js';
 import { builtinPlugins } from './plugins/index.js';
 
 // 注册所有内置插件（新增插件只需加入 plugins/index.ts 的列表）
@@ -168,6 +170,50 @@ async function main() {
     .action((keyword: string, status: string) => {
       const r = updateRequirementStatus(keyword, status);
       console.log(r.ok ? chalk.green(`✅ ${r.message}`) : chalk.red(`❌ ${r.message}`));
+    });
+
+  // 常驻雷达（双环：内环找词 + 外环验证）
+  program
+    .command('radar')
+    .description('常驻雷达：内环每日找词 + 外环批量验证（双环调度）')
+    .option('--inner-only', '只跑内环（找词）')
+    .option('--outer-only', '只跑外环（验证）')
+    .option('--watch', '常驻模式：内环每日自动找词 + 外环每周自动验证')
+    .action(async (options: { innerOnly?: boolean; outerOnly?: boolean; watch?: boolean }) => {
+      const runBoth = !options.innerOnly && !options.outerOnly;
+
+      // 常驻模式：内环每日 + 外环每周自动运行
+      if (options.watch) {
+        console.log(chalk.cyan('🛰 雷达常驻模式启动'));
+        console.log(chalk.gray(`   内环(找词): 每日 ${config.radarInnerCron}`));
+        console.log(chalk.gray(`   外环(验证): 每周 ${config.radarOuterCron}`));
+        console.log(chalk.gray('   按 Ctrl+C 停止\n'));
+
+        // 启动即跑一轮
+        if (runBoth || options.innerOnly) await runInnerLoop();
+        if (runBoth || options.outerOnly) await runOuterLoop();
+
+        cron.schedule(config.radarInnerCron, () => {
+          console.log(chalk.cyan(`\n⏰ [${new Date().toLocaleString()}] 内环触发`));
+          runInnerLoop().catch(err => console.log(chalk.red('内环出错:'), err));
+        });
+        cron.schedule(config.radarOuterCron, () => {
+          console.log(chalk.cyan(`\n⏰ [${new Date().toLocaleString()}] 外环触发`));
+          runOuterLoop().catch(err => console.log(chalk.red('外环出错:'), err));
+        });
+
+        // 常驻不退出（cron 由 node-cron 内部定时器驱动）
+        await new Promise(() => {});
+        return;
+      }
+
+      // 单次模式
+      if (runBoth || options.innerOnly) await runInnerLoop();
+      if (runBoth || options.outerOnly) await runOuterLoop();
+
+      // 状态摘要
+      const pending = countUnverifiedWords();
+      console.log(chalk.gray(`\n📋 未验证词队列: 还剩 ${pending} 个待外环处理`));
     });
 
   // 默认动作：无子命令时执行（find / list / watch）

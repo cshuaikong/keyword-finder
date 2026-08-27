@@ -378,3 +378,102 @@ export function setTrendSeedCache(seed: string, keywordsJson: string): void {
                 checked_at = excluded.checked_at`)
     .run(seed.toLowerCase().trim(), keywordsJson, new Date().toISOString());
 }
+
+// ─────────────────────────────────────────────────────────────
+// 雷达模式辅助函数（常驻双环调度用）
+//   - upsertRadarWord:      内环轻量入库（未验证，volume_level=unknown）
+//   - queryUnverifiedWords: 外环验证队列（seen_count 高优先）
+//   - updateWordVolume:     外环验证后回写量级
+//   - countUnverifiedWords: 队列总数（雷达状态显示）
+//   - insertRadarRun:       雷达运行记录（--list 命令可见）
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * 轻量入库：找词环发现的词直接进 words 表（未验证状态）
+ * - 新词：INSERT，volume_level='unknown'
+ * - 已有词：seen_count+1、last_seen_at 刷新，不覆盖任何已验证字段
+ * @param source 来源标记（'trends:breakout' / 'trends' / 'suggest' 等）
+ * @returns created 是否为新入库词
+ */
+export function upsertRadarWord(keyword: string, source: string): { created: boolean } {
+  const database = getDb();
+  const key = keyword.toLowerCase().trim();
+  const now = new Date().toISOString();
+
+  const existing = database
+    .prepare('SELECT id FROM words WHERE lower(keyword) = lower(?)')
+    .get(key) as { id: number } | undefined;
+
+  if (existing) {
+    database
+      .prepare('UPDATE words SET seen_count = seen_count + 1, last_seen_at = ? WHERE id = ?')
+      .run(now, existing.id);
+    return { created: false };
+  }
+
+  database
+    .prepare(`INSERT INTO words (keyword, volume_level, trend_direction, source, first_seen_at, last_seen_at, seen_count)
+              VALUES (?, 'unknown', 'unknown', ?, ?, ?, 1)`)
+    .run(key, source, now, now);
+  return { created: true };
+}
+
+/**
+ * 外环验证队列：未验证且 14 天内未查过量级的词
+ * - seen_count DESC：被多个词根/多天重复发现的词优先验证（信号更强）
+ * - LEFT JOIN volume_cache 排除 14 天内查过的：查无数据的词不反复占队列名额
+ */
+export function queryUnverifiedWords(limit = 5): WordRow[] {
+  const database = getDb();
+  return database
+    .prepare(`SELECT w.* FROM words w
+              LEFT JOIN volume_cache v ON v.keyword = lower(w.keyword)
+              WHERE w.volume_level = 'unknown'
+                AND (v.checked_at IS NULL OR v.checked_at < datetime('now', '-14 days'))
+              ORDER BY w.seen_count DESC, w.last_seen_at DESC
+              LIMIT ?`)
+    .all(limit) as WordRow[];
+}
+
+/**
+ * 量级回写：外环验证后更新 words 表
+ * 只写量级/趋势字段，competition/action 等留给人工筛选（accept/reject）
+ */
+export function updateWordVolume(
+  keyword: string,
+  data: { volumeLevel: string; volumeAvg?: number; trendDirection: string },
+): void {
+  const database = getDb();
+  database
+    .prepare('UPDATE words SET volume_level = ?, volume_avg = ?, trend_direction = ? WHERE lower(keyword) = lower(?)')
+    .run(data.volumeLevel, data.volumeAvg ?? null, data.trendDirection, keyword.toLowerCase().trim());
+}
+
+/** 未验证词队列总数（雷达状态摘要用） */
+export function countUnverifiedWords(): number {
+  const database = getDb();
+  const row = database
+    .prepare(`SELECT COUNT(*) AS c FROM words w
+              LEFT JOIN volume_cache v ON v.keyword = lower(w.keyword)
+              WHERE w.volume_level = 'unknown'
+                AND (v.checked_at IS NULL OR v.checked_at < datetime('now', '-14 days'))`)
+    .get() as { c: number };
+  return row.c;
+}
+
+/**
+ * 雷达运行记录（category 区分内环/外环，--list 命令可见）
+ */
+export function insertRadarRun(
+  category: 'radar-inner' | 'radar-outer',
+  seeds: string[],
+  candidatesCount: number,
+  validatedCount: number,
+  durationMs: number,
+): void {
+  const database = getDb();
+  database
+    .prepare(`INSERT INTO runs (run_at, category, seeds, candidates_count, validated_count, duration_ms)
+              VALUES (?, ?, ?, ?, ?, ?)`)
+    .run(new Date().toISOString(), category, JSON.stringify(seeds), candidatesCount, validatedCount, durationMs);
+}
