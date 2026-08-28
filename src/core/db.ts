@@ -145,6 +145,17 @@ export function queryWords(limit = 20, action?: string): WordRow[] {
 }
 
 /**
+ * 查询最近发现/更新的词（雷达常驻模式下看新词用）
+ * 按 last_seen_at 倒序：被内环重复发现的词也会冒到前面
+ */
+export function queryRecentWords(limit = 15): WordRow[] {
+  const database = getDb();
+  return database
+    .prepare('SELECT * FROM words ORDER BY last_seen_at DESC LIMIT ?')
+    .all(limit) as WordRow[];
+}
+
+/**
  * 查询淘汰池
  */
 export function queryRejects(limit = 20): Array<{ keyword: string; reason: string | null; score: number | null; rejected_at: string }> {
@@ -476,4 +487,116 @@ export function insertRadarRun(
     .prepare(`INSERT INTO runs (run_at, category, seeds, candidates_count, validated_count, duration_ms)
               VALUES (?, ?, ?, ?, ?, ?)`)
     .run(new Date().toISOString(), category, JSON.stringify(seeds), candidatesCount, validatedCount, durationMs);
+}
+
+// ─────────────────────────────────────────────────────────────
+// Web 管理面板辅助函数（检索/分页/删除）
+// ─────────────────────────────────────────────────────────────
+
+/** 词库搜索过滤器 */
+export interface WordFilter {
+  /** 关键词模糊匹配（LIKE） */
+  keyword?: string;
+  /** 来源过滤（'trends:breakout' / 'trends' / 'suggest' 等） */
+  source?: string;
+  /** 量级过滤（'unknown' | 'A' | 'B' | 'C' | 'D'） */
+  volumeLevel?: string;
+  /** 行动建议过滤（'watch' | 'register-now' | 'skip'） */
+  action?: string;
+  /** 排序: recent=最近发现 | seen=出现次数 | score=评分 */
+  sort?: 'recent' | 'seen' | 'score';
+  limit?: number;
+  offset?: number;
+}
+
+/**
+ * 词库检索（web 管理面板用）：关键词模糊 + 多维过滤 + 分页
+ * 返回匹配总数和当前页条目
+ */
+export function searchWords(filter: WordFilter = {}): { total: number; items: WordRow[] } {
+  const database = getDb();
+  const where: string[] = [];
+  const params: Array<string | number> = [];
+
+  if (filter.keyword) {
+    where.push('keyword LIKE ?');
+    params.push(`%${filter.keyword.toLowerCase().trim()}%`);
+  }
+  if (filter.source) {
+    where.push('source = ?');
+    params.push(filter.source);
+  }
+  if (filter.volumeLevel) {
+    where.push('volume_level = ?');
+    params.push(filter.volumeLevel);
+  }
+  if (filter.action) {
+    where.push('action = ?');
+    params.push(filter.action);
+  }
+
+  const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
+
+  // 排序（白名单映射，防注入）
+  const sortMap: Record<string, string> = {
+    recent: 'last_seen_at DESC',
+    seen: 'seen_count DESC, last_seen_at DESC',
+    score: 'score DESC',
+  };
+  const orderSql = sortMap[filter.sort ?? 'recent'] ?? sortMap.recent;
+
+  const limit = Math.min(Math.max(filter.limit ?? 50, 1), 200);
+  const offset = Math.max(filter.offset ?? 0, 0);
+
+  const total = (database
+    .prepare(`SELECT COUNT(*) AS c FROM words ${whereSql}`)
+    .get(...params) as { c: number }).c;
+
+  const items = database
+    .prepare(`SELECT * FROM words ${whereSql} ORDER BY ${orderSql} LIMIT ? OFFSET ?`)
+    .all(...params, limit, offset) as WordRow[];
+
+  return { total, items };
+}
+
+/**
+ * 从词库删除某词（web 面板的“仅删除”按钮，不记入淘汰池）
+ */
+export function deleteWord(keyword: string): { ok: boolean; message: string } {
+  const database = getDb();
+  const result = database
+    .prepare('DELETE FROM words WHERE lower(keyword) = lower(?)')
+    .run(keyword.toLowerCase().trim());
+  if (result.changes === 0) {
+    return { ok: false, message: `词库中不存在「${keyword}」` };
+  }
+  return { ok: true, message: `「${keyword}」已从词库删除` };
+}
+
+/**
+ * 从需求库删除某词（web 面板）
+ */
+export function deleteRequirement(keyword: string): { ok: boolean; message: string } {
+  const database = getDb();
+  const result = database
+    .prepare('DELETE FROM requirements WHERE lower(keyword) = lower(?)')
+    .run(keyword.toLowerCase().trim());
+  if (result.changes === 0) {
+    return { ok: false, message: `需求库中不存在「${keyword}」` };
+  }
+  return { ok: true, message: `「${keyword}」已从需求库删除` };
+}
+
+/**
+ * 从淘汰池删除记录（web 面板）
+ */
+export function deleteReject(keyword: string): { ok: boolean; message: string } {
+  const database = getDb();
+  const result = database
+    .prepare('DELETE FROM rejects WHERE lower(keyword) = lower(?)')
+    .run(keyword.toLowerCase().trim());
+  if (result.changes === 0) {
+    return { ok: false, message: `淘汰池中不存在「${keyword}」` };
+  }
+  return { ok: true, message: `「${keyword}」已从淘汰池删除` };
 }
