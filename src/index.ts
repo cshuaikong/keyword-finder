@@ -39,6 +39,7 @@ import {
   countUnverifiedWords,
 } from './core/db.js';
 import { runInnerLoop, runOuterLoop } from './modules/radar.js';
+import { startWebUi } from './modules/webui.js';
 import { builtinPlugins } from './plugins/index.js';
 
 // 注册所有内置插件（新增插件只需加入 plugins/index.ts 的列表）
@@ -204,6 +205,9 @@ async function main() {
         console.log(chalk.gray(`   外环(验证): 每周 ${config.radarOuterCron}`));
         console.log(chalk.gray('   按 Ctrl+C 停止\n'));
 
+        // 管理面板随雷达常驻模式自动带起
+        await startWebUi();
+
         // 启动即跑一轮
         if (runBoth || options.innerOnly) await runInnerLoop();
         if (runBoth || options.outerOnly) await runOuterLoop();
@@ -231,6 +235,18 @@ async function main() {
       console.log(chalk.gray(`\n📋 未验证词队列: 还剩 ${pending} 个待外环处理`));
     });
 
+  // Web 管理面板（独立启动，或随 watch 模式自动带起）
+  program
+    .command('webui')
+    .description('启动 Web 管理面板（浏览器中检索/筛选/通过/淘汰/删除词库）')
+    .option('-p, --port <port>', '监听端口', String(config.webuiPort))
+    .action(async (options: { port?: string }) => {
+      await startWebUi(parseInt(options.port || String(config.webuiPort), 10));
+      console.log(chalk.gray('   按 Ctrl+C 停止'));
+      // 常驻不退出
+      await new Promise(() => {});
+    });
+
   // 默认动作：无子命令时执行（find / list / watch）
   // 注意：定义了子命令后必须给主程序配 action handler，
   // 否则 commander 会认为“漏了子命令”而打印帮助并退出
@@ -252,6 +268,9 @@ async function main() {
     if (opts.watch) {
       console.log(chalk.cyan(`⏰ 定时模式启动，每天 ${config.cronSchedule} 自动运行`));
       console.log(chalk.gray('   按 Ctrl+C 停止\n'));
+
+      // 管理面板随常驻模式自动带起
+      await startWebUi();
 
       // 先立即运行一次
       await executeAndReport(category);

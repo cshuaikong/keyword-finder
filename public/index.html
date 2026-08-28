@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>keyword-finder 管理面板</title>
+<style>
+  :root {
+    --bg: #0f1419; --panel: #171e26; --border: #2a3442;
+    --text: #dbe4ee; --muted: #8899aa; --accent: #4da3ff;
+    --green: #3fbf7f; --red: #e05c5c; --yellow: #e0b545; --purple: #b07bf0;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 14px/1.6 "Segoe UI", "Microsoft YaHei", sans-serif;
+    padding: 20px; max-width: 1400px; margin: 0 auto;
+  }
+  h1 { font-size: 20px; margin-bottom: 4px; }
+  .sub { color: var(--muted); font-size: 12px; margin-bottom: 16px; }
+  .cards { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px 16px; min-width: 110px;
+  }
+  .card .num { font-size: 22px; font-weight: 700; }
+  .card .label { color: var(--muted); font-size: 12px; }
+  .card.green .num { color: var(--green); }
+  .card.yellow .num { color: var(--yellow); }
+  .card.red .num { color: var(--red); }
+  .card.purple .num { color: var(--purple); }
+  .tabs { display: flex; gap: 4px; margin-bottom: 12px; border-bottom: 1px solid var(--border); }
+  .tab {
+    padding: 8px 16px; cursor: pointer; color: var(--muted);
+    border: 1px solid transparent; border-bottom: none; border-radius: 8px 8px 0 0;
+    background: transparent; font-size: 14px;
+  }
+  .tab.active { color: var(--accent); background: var(--panel); border-color: var(--border); }
+  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; align-items: center; }
+  input[type=text], select {
+    background: var(--panel); border: 1px solid var(--border); color: var(--text);
+    border-radius: 6px; padding: 6px 10px; font-size: 13px; outline: none;
+  }
+  input[type=text]:focus, select:focus { border-color: var(--accent); }
+  input[type=text] { width: 240px; }
+  button {
+    background: var(--accent); color: #fff; border: none; border-radius: 6px;
+    padding: 6px 14px; cursor: pointer; font-size: 13px;
+  }
+  button:hover { opacity: .88; }
+  button.mini { padding: 3px 9px; font-size: 12px; }
+  button.green { background: var(--green); }
+  button.red { background: var(--red); }
+  button.gray { background: #3a4656; }
+  button.purple { background: var(--purple); }
+  table { width: 100%; border-collapse: collapse; background: var(--panel); border-radius: 8px; overflow: hidden; }
+  th, td { padding: 7px 10px; text-align: left; border-bottom: 1px solid var(--border); font-size: 13px; }
+  th { color: var(--muted); font-weight: 600; background: #1b232e; position: sticky; top: 0; }
+  tr:hover td { background: #1d2733; }
+  .kw { font-weight: 600; color: #fff; }
+  .tag { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; }
+  .tag.A { background: #1f5c3d; color: #6fe3a8; }
+  .tag.B { background: #2b4a6b; color: #8fc3f5; }
+  .tag.C { background: #5c5320; color: #f0d878; }
+  .tag.D { background: #444a52; color: #b6bfc9; }
+  .tag.unknown { background: #333a44; color: #9aa6b4; }
+  .tag.suggest { background: #2b4a6b; color: #8fc3f5; }
+  .tag.trends { background: #4a2b6b; color: #c9a2f5; }
+  .tag.breakout { background: #6b2b2b; color: #f5a2a2; }
+  .tag.watch { background: #5c5320; color: #f0d878; }
+  .tag.register-now { background: #1f5c3d; color: #6fe3a8; }
+  .tag.skip { background: #444a52; color: #b6bfc9; }
+  .status-sel { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 3px 6px; font-size: 12px; }
+  .pager { display: flex; gap: 10px; align-items: center; margin-top: 12px; color: var(--muted); }
+  .empty { color: var(--muted); text-align: center; padding: 40px 0; }
+  .toast {
+    position: fixed; top: 16px; right: 16px; background: var(--panel);
+    border: 1px solid var(--border); border-left: 4px solid var(--accent);
+    border-radius: 6px; padding: 10px 16px; font-size: 13px; z-index: 99;
+    box-shadow: 0 4px 16px rgba(0,0,0,.4); display: none; max-width: 380px;
+  }
+  .toast.ok { border-left-color: var(--green); }
+  .toast.err { border-left-color: var(--red); }
+  .view { display: none; }
+  .view.active { display: block; }
+</style>
+</head>
+<body>
+<h1>📡 keyword-finder 管理面板</h1>
+<div class="sub">词库 / 需求库 / 淘汰池 / 运行记录 · 数据实时来自 SQLite</div>
+
+<div class="cards" id="stats">
+  <div class="card"><div class="num" id="st-total">–</div><div class="label">词库总数</div></div>
+  <div class="card yellow"><div class="num" id="st-unverified">–</div><div class="label">未验证队列</div></div>
+  <div class="card green"><div class="num" id="st-register">–</div><div class="label">🚀 立即注册</div></div>
+  <div class="card"><div class="num" id="st-watch">–</div><div class="label">👀 观察</div></div>
+  <div class="card red"><div class="num" id="st-skip">–</div><div class="label">⛔ 放弃</div></div>
+  <div class="card purple"><div class="num" id="st-req">–</div><div class="label">需求库</div></div>
+</div>
+
+<div class="tabs">
+  <div class="tab active" data-view="words" onclick="switchView('words')">📚 词库</div>
+  <div class="tab" data-view="requirements" onclick="switchView('requirements')">📋 需求库</div>
+  <div class="tab" data-view="rejects" onclick="switchView('rejects')">⛔ 淘汰池</div>
+  <div class="tab" data-view="runs" onclick="switchView('runs')">⏱ 运行记录</div>
+</div>
+
+<!-- 词库 -->
+<div class="view active" id="view-words">
+  <div class="toolbar">
+    <input type="text" id="f-keyword" placeholder="搜索关键词（模糊匹配）…" onkeydown="if(event.key==='Enter')loadWords(0)">
+    <select id="f-volume"><option value="">量级：全部</option><option value="unknown">unknown</option><option value="A">A</option><option value="B">B</option><option value="C">C</option><option value="D">D</option></select>
+    <select id="f-source"><option value="">来源：全部</option><option value="trends:breakout">trends:breakout</option><option value="trends">trends</option><option value="suggest">suggest</option></select>
+    <select id="f-action"><option value="">行动：全部</option><option value="watch">观察</option><option value="register-now">立即注册</option><option value="skip">放弃</option></select>
+    <select id="f-sort"><option value="recent">排序：最近</option><option value="seen">出现次数</option><option value="score">评分</option></select>
+    <button onclick="loadWords(0)">🔍 检索</button>
+    <button class="gray" onclick="resetFilters()">重置</button>
+    <button class="gray" onclick="loadWords(offset)">🔄 刷新</button>
+  </div>
+  <table>
+    <thead><tr>
+      <th>关键词</th><th>量级</th><th>趋势</th><th>来源</th><th>出现</th><th>评分</th><th>行动</th><th>最近时间</th><th>操作</th>
+    </tr></thead>
+    <tbody id="words-body"></tbody>
+  </table>
+  <div class="pager">
+    <button class="gray mini" onclick="loadWords(Math.max(0, offset - 50))">← 上一页</button>
+    <span id="words-pager"></span>
+    <button class="gray mini" onclick="loadWords(offset + 50)">下一页 →</button>
+  </div>
+</div>
+
+<!-- 需求库 -->
+<div class="view" id="view-requirements">
+  <div class="toolbar">
+    <button class="gray" onclick="loadRequirements()">🔄 刷新</button>
+  </div>
+  <table>
+    <thead><tr><th>关键词</th><th>状态</th><th>主题</th><th>入选理由</th><th>更新时间</th><th>操作</th></tr></thead>
+    <tbody id="req-body"></tbody>
+  </table>
+</div>
+
+<!-- 淘汰池 -->
+<div class="view" id="view-rejects">
+  <div class="toolbar">
+    <button class="gray" onclick="loadRejects()">🔄 刷新</button>
+  </div>
+  <table>
+    <thead><tr><th>关键词</th><th>理由</th><th>评分</th><th>淘汰时间</th><th>操作</th></tr></thead>
+    <tbody id="rejects-body"></tbody>
+  </table>
+</div>
+
+<!-- 运行记录 -->
+<div class="view" id="view-runs">
+  <div class="toolbar">
+    <button class="gray" onclick="loadRuns()">🔄 刷新</button>
+  </div>
+  <table>
+    <thead><tr><th>时间</th><th>分类</th><th>候选</th><th>验证</th><th>耗时</th></tr></thead>
+    <tbody id="runs-body"></tbody>
+  </table>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+let offset = 0;
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function toast(msg, ok = true) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.className = 'toast ' + (ok ? 'ok' : 'err');
+  t.style.display = 'block';
+  clearTimeout(t._timer);
+  t._timer = setTimeout(() => t.style.display = 'none', 2500);
+}
+
+async function api(path, opts) {
+  const res = await fetch(path, opts);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+  return data;
+}
+
+function switchView(name) {
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  $('view-' + name).classList.add('active');
+  document.querySelector(`.tab[data-view="${name}"]`).classList.add('active');
+  if (name === 'words') loadWords(offset);
+  if (name === 'requirements') loadRequirements();
+  if (name === 'rejects') loadRejects();
+  if (name === 'runs') loadRuns();
+}
+
+async function loadStats() {
+  try {
+    const s = await api('/api/stats');
+    $('st-total').textContent = s.total;
+    $('st-unverified').textContent = s.unverified ?? 0;
+    $('st-register').textContent = s.registerNow;
+    $('st-watch').textContent = s.watch;
+    $('st-skip').textContent = s.skip;
+    $('st-req').textContent = await api('/api/requirements').then(r => r.length);
+  } catch (e) { toast('统计加载失败: ' + e.message, false); }
+}
+
+function volumeTag(v) { return `<span class="tag ${esc(v)}">${esc(v)}</span>`; }
+
+function sourceTag(s) {
+  if (s === 'trends:breakout') return '<span class="tag breakout">BREAKOUT</span>';
+  if (s === 'trends') return '<span class="tag trends">trends</span>';
+  if (s === 'suggest') return '<span class="tag suggest">suggest</span>';
+  return esc(s || '—');
+}
+
+function actionTag(a) {
+  if (a === 'register-now') return '<span class="tag register-now">🚀 立即注册</span>';
+  if (a === 'watch') return '<span class="tag watch">👀 观察</span>';
+  if (a === 'skip') return '<span class="tag skip">⛔ 放弃</span>';
+  return esc(a || '—');
+}
+
+function fmtTime(iso) { return iso ? iso.slice(5, 16).replace('T', ' ') : '—'; }
+
+async function loadWords(pageOffset) {
+  if (pageOffset !== undefined) offset = pageOffset;
+  const q = new URLSearchParams({ limit: '50', offset: String(offset) });
+  const kw = $('f-keyword').value.trim();
+  if (kw) q.set('q', kw);
+  if ($('f-volume').value) q.set('volume', $('f-volume').value);
+  if ($('f-source').value) q.set('source', $('f-source').value);
+  if ($('f-action').value) q.set('action', $('f-action').value);
+  if ($('f-sort').value) q.set('sort', $('f-sort').value);
+
+  try {
+    const r = await api('/api/words?' + q);
+    const body = $('words-body');
+    if (r.items.length === 0) {
+      body.innerHTML = '<tr><td colspan="9" class="empty">没有匹配的词</td></tr>';
+    } else {
+      body.innerHTML = r.items.map(w => `<tr>
+        <td class="kw" title="${esc(w.chinese_meaning || '')}">${esc(w.keyword)}</td>
+        <td>${volumeTag(w.volume_level)}</td>
+        <td>${esc(w.trend_direction)}</td>
+        <td>${sourceTag(w.source)}</td>
+        <td>${w.seen_count}次</td>
+        <td>${w.score}</td>
+        <td>${actionTag(w.action)}</td>
+        <td>${fmtTime(w.last_seen_at)}</td>
+        <td style="white-space:nowrap">
+          <button class="mini green" onclick="acceptWord('${esc(w.keyword)}')">✅通过</button>
+          <button class="mini red" onclick="rejectWord('${esc(w.keyword)}')">⛔淘汰</button>
+          <button class="mini gray" onclick="delWord('${esc(w.keyword)}')">🗑删除</button>
+        </td>
+      </tr>`).join('');
+    }
+    const page = Math.floor(offset / 50) + 1;
+    const pages = Math.max(1, Math.ceil(r.total / 50));
+    $('words-pager').textContent = `共 ${r.total} 词 · 第 ${page}/${pages} 页`;
+  } catch (e) { toast('词库加载失败: ' + e.message, false); }
+}
+
+function resetFilters() {
+  $('f-keyword').value = ''; $('f-volume').value = ''; $('f-source').value = '';
+  $('f-action').value = ''; $('f-sort').value = 'recent';
+  loadWords(0);
+}
+
+async function post(path, body) {
+  try {
+    const r = await api(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    toast(r.message || (r.ok ? '操作成功' : '操作失败'), !!r.ok);
+    return r;
+  } catch (e) { toast(e.message, false); return null; }
+}
+
+async function acceptWord(kw) {
+  const theme = prompt('入选主题（可选，如「游戏攻略」「AI 工具」）:', '');
+  if (theme === null) return; // 取消
+  const r = await post('/api/words/accept', { keyword: kw, theme: theme || undefined });
+  if (r?.ok) { loadWords(offset); loadStats(); }
+}
+
+async function rejectWord(kw) {
+  const reason = prompt('淘汰理由（可选）:', '');
+  if (reason === null) return;
+  const r = await post('/api/words/reject', { keyword: kw, reason: reason || undefined });
+  if (r?.ok) { loadWords(offset); loadStats(); }
+}
+
+async function delWord(kw) {
+  if (!confirm(`确定从词库删除「${kw}」？（不记入淘汰池）`)) return;
+  const r = await post('/api/words/delete', { keyword: kw });
+  if (r?.ok) { loadWords(offset); loadStats(); }
+}
+
+const STATUS_LABEL = { planned: '🗓 规划中', developing: '🔨 开发中', launched: '🚀 已上线', abandoned: '❌ 已放弃' };
+
+async function loadRequirements() {
+  try {
+    const list = await api('/api/requirements');
+    const body = $('req-body');
+    if (list.length === 0) {
+      body.innerHTML = '<tr><td colspan="6" class="empty">需求库为空（词库中点 ✅通过 加入）</td></tr>';
+    } else {
+      body.innerHTML = list.map(r => `<tr>
+        <td class="kw">${esc(r.keyword)}</td>
+        <td>
+          <select class="status-sel" onchange="setReqStatus('${esc(r.keyword)}', this.value)">
+            ${Object.entries(STATUS_LABEL).map(([k, v]) =>
+              `<option value="${k}" ${r.status === k ? 'selected' : ''}>${v}</option>`).join('')}
+          </select>
+        </td>
+        <td>${esc(r.theme || '—')}</td>
+        <td>${esc(r.decision_note || '—')}</td>
+        <td>${fmtTime(r.updated_at)}</td>
+        <td><button class="mini gray" onclick="delRequirement('${esc(r.keyword)}')">🗑删除</button></td>
+      </tr>`).join('');
+    }
+  } catch (e) { toast('需求库加载失败: ' + e.message, false); }
+}
+
+async function setReqStatus(kw, status) {
+  const r = await post('/api/requirements/status', { keyword: kw, status });
+  if (r?.ok) loadStats();
+  else loadRequirements();
+}
+
+async function delRequirement(kw) {
+  if (!confirm(`确定从需求库删除「${kw}」？`)) return;
+  const r = await post('/api/requirements/delete', { keyword: kw });
+  if (r?.ok) { loadRequirements(); loadStats(); }
+}
+
+async function loadRejects() {
+  try {
+    const list = await api('/api/rejects');
+    const body = $('rejects-body');
+    if (list.length === 0) {
+      body.innerHTML = '<tr><td colspan="5" class="empty">淘汰池为空</td></tr>';
+    } else {
+      body.innerHTML = list.map(r => `<tr>
+        <td class="kw">${esc(r.keyword)}</td>
+        <td>${esc(r.reason || '—')}</td>
+        <td>${r.score ?? '—'}</td>
+        <td>${fmtTime(r.rejected_at)}</td>
+        <td><button class="mini gray" onclick="delReject('${esc(r.keyword)}')">🗑删除</button></td>
+      </tr>`).join('');
+    }
+  } catch (e) { toast('淘汰池加载失败: ' + e.message, false); }
+}
+
+async function delReject(kw) {
+  if (!confirm(`确定删除淘汰记录「${kw}」？`)) return;
+  const r = await post('/api/rejects/delete', { keyword: kw });
+  if (r?.ok) loadRejects();
+}
+
+async function loadRuns() {
+  try {
+    const list = await api('/api/runs');
+    const body = $('runs-body');
+    if (list.length === 0) {
+      body.innerHTML = '<tr><td colspan="5" class="empty">暂无运行记录</td></tr>';
+    } else {
+      body.innerHTML = list.map(r => `<tr>
+        <td>${fmtTime(r.run_at)}</td>
+        <td>${esc(r.category)}</td>
+        <td>${r.candidates_count}</td>
+        <td>${r.validated_count}</td>
+        <td>${(r.duration_ms / 1000).toFixed(0)}s</td>
+      </tr>`).join('');
+    }
+  } catch (e) { toast('运行记录加载失败: ' + e.message, false); }
+}
+
+// 启动：加载统计 + 词库第一页，之后每 60 秒自动刷新统计
+loadStats();
+loadWords(0);
+setInterval(loadStats, 60000);
+</script>
+</body>
+</html>
