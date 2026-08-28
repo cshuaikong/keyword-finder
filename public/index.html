@@ -228,7 +228,14 @@ function actionTag(a) {
   return esc(a || '—');
 }
 
-function fmtTime(iso) { return iso ? iso.slice(5, 16).replace('T', ' ') : '—'; }
+// 时间格式化：ISO(UTC) → 浏览器本地时区 MM-DD HH:MM
+function fmtTime(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '—';
+  const p = n => String(n).padStart(2, '0');
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
 
 async function loadWords(pageOffset) {
   if (pageOffset !== undefined) offset = pageOffset;

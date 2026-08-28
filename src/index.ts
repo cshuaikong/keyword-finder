@@ -88,8 +88,7 @@ function printWordLibrary(): void {
     console.log('  | 关键词 | 量级 | 来源 | 出现 | 最近时间 |');
     console.log('  |--------|------|------|------|----------|');
     recent.forEach(w => {
-      const time = w.last_seen_at.slice(5, 16).replace('T', ' ');
-      console.log(`  | ${w.keyword} | ${w.volume_level} | ${w.source || '—'} | ${w.seen_count}次 | ${time} |`);
+      console.log(`  | ${w.keyword} | ${w.volume_level} | ${w.source || '—'} | ${w.seen_count}次 | ${fmtLocalTime(w.last_seen_at)} |`);
     });
     console.log('');
   }
@@ -139,6 +138,14 @@ function requirementStatusLabel(status: string): string {
     case 'abandoned': return '❌ 已放弃';
     default: return status;
   }
+}
+
+/** 时间格式化：ISO(UTC) → 本地时区 MM-DD HH:MM */
+function fmtLocalTime(iso: string): string {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '—';
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
 /**
