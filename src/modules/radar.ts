@@ -21,12 +21,14 @@ import { config } from '../config.js';
 import { getSeedsByDate } from '../seeds.js';
 import { findTrendingKeywords, getVolumeAndTrend } from './trends.js';
 import { suggestMine } from './suggest.js';
+import { captureNewReleases } from './steam-newreleases.js';
 import {
   upsertRadarWord,
   queryUnverifiedWords,
   updateWordVolume,
   insertRadarRun,
   getVolumeCache,
+  upsertSteamGame,
 } from '../core/db.js';
 
 /** 延迟函数，用于限流 */
@@ -53,6 +55,7 @@ export interface InnerLoopResult {
   seeds: string[];
   found: number;   // 本轮发现（去重后）
   created: number; // 新入库词数
+  steamGames: number; // 本轮新捕获的 Steam 游戏数
 }
 
 /**
@@ -94,7 +97,33 @@ export async function runInnerLoop(date: Date = new Date()): Promise<InnerLoopRe
     console.log(chalk.gray(`    [${seed}] suggest 挖到 ${list.length} 个长尾（预筛入库 ${added}）`));
   }
 
-  // ③ 轻量入库
+  // ③ Steam 新发售捕获（0 额度）：游戏名 → suggest 挖攻略长尾
+  // P0 缺口：此前新游戏发售雷达不知道（如 8/27 Zero Company），攻略词窗口错过
+  // 游戏名写入 steam_games 表（不进 words 表），长尾词按 suggest 来源入库
+  let steamGames = 0;
+  console.log(chalk.gray('  🎮 Steam 新发售捕获（免费）...'));
+  try {
+    const newGames = await captureNewReleases();
+    for (const g of newGames) {
+      upsertSteamGame(g.appid, g.title);
+      steamGames++;
+      const list = await suggestMine(g.title, config.suggestDelay, { patternsOnly: true });
+      let added = 0;
+      for (const k of list) {
+        const key = k.keyword.toLowerCase().trim();
+        if (key && !seen.has(key) && isViableKeyword(key)) {
+          seen.set(key, 'suggest');
+          added++;
+        }
+      }
+      console.log(chalk.gray(`    [${g.title}] suggest 挖到 ${list.length} 个长尾（入库 ${added}）`));
+    }
+    if (steamGames === 0) console.log(chalk.gray('    无新发售游戏（缓存命中，跳过）'));
+  } catch (err: any) {
+    console.log(chalk.gray(`    Steam 源失败（跳过，不影响本轮）: ${err?.message || err}`));
+  }
+
+  // ④ 轻量入库
   let created = 0;
   for (const [key, source] of seen) {
     const r = upsertRadarWord(key, source);
@@ -104,8 +133,8 @@ export async function runInnerLoop(date: Date = new Date()): Promise<InnerLoopRe
   const duration = Date.now() - started;
   insertRadarRun('radar-inner', seeds, seen.size, created, duration);
 
-  console.log(chalk.green(`\n✅ 内环完成: 发现 ${seen.size} 词（新词 ${created}），耗时 ${(duration / 1000).toFixed(0)}s`));
-  return { seeds, found: seen.size, created };
+  console.log(chalk.green(`\n✅ 内环完成: 发现 ${seen.size} 词（新词 ${created}），新游戏 ${steamGames}，耗时 ${(duration / 1000).toFixed(0)}s`));
+  return { seeds, found: seen.size, created, steamGames };
 }
 
 /**

@@ -25,6 +25,7 @@ export interface Config {
   radarInnerCron: string; // 雷达内环调度（默认每日 08:00）
   radarOuterCron: string; // 雷达外环调度（默认每周日 09:00）
   suggestDelay: number; // Google Suggest 免费引擎请求间隔(ms)
+  steamReleaseLimit: number; // Steam 新发售捕获：每轮最多处理几个新游戏（suggest 挖掘上限）
   webuiPort: number; // Web 管理面板端口（默认 3000）
   disableSources: string[]; // 禁用的数据源列表（旧配置，向后兼容）
   disablePlugins: string[]; // 禁用插件列表（新配置，适用于所有插件类型）
@@ -49,6 +50,7 @@ export const config: Config = {
   radarInnerCron: process.env.RADAR_INNER_CRON || '0 8 * * *',
   radarOuterCron: process.env.RADAR_OUTER_CRON || '0 9 * * 0',
   suggestDelay: parseInt(process.env.SUGGEST_DELAY || '150', 10),
+  steamReleaseLimit: parseInt(process.env.STEAM_RELEASE_LIMIT || '5', 10),
   webuiPort: parseInt(process.env.WEBUI_PORT || '3000', 10),
   disableSources: (process.env.DISABLE_SOURCES || '').split(',').map(s => s.trim()).filter(Boolean),
   // 插件禁用列表：如 DISABLE_PLUGINS=telegram,sitemap 可禁用任意类型的插件

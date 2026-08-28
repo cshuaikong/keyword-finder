@@ -2,15 +2,19 @@
  * 词根库 - 来自哥飞社群总结 + 扩展
  * 这些是通用且流量大的关键词后缀/前缀
  * 使用时与具体主题组合，如 "game generator", "ai maker" 等
+ *
+ * 游戏名不再手工维护：新发售游戏名由 Steam 捕获源自动供给
+ * （modules/steam-newreleases.ts → steam_games 表 → 内环 suggest 挖掘）
  */
 
 // 游戏类常用词根（做小游戏站重点关注）
+// 净化：删掉 coloring page/quiz/trivia 泛噪声词根（与游戏攻略无关，
+// 曾导致雷达连续多天产出 trivia/coloring 噪声词）
 export const gameSeeds = [
   'game', 'games', 'play', 'player',
   'simulator', 'puzzle', 'arcade', 'racing',
   'shooter', 'adventure', 'strategy', 'board game',
   'io game', 'multiplayer', 'online game',
-  'coloring page', 'quiz', 'trivia',
   'cheat', 'walkthrough', 'guide',
 ];
 

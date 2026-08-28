@@ -37,6 +37,7 @@ import {
   rejectWord,
   updateRequirementStatus,
   countUnverifiedWords,
+  querySteamGames,
 } from './core/db.js';
 import { runInnerLoop, runOuterLoop } from './modules/radar.js';
 import { startWebUi } from './modules/webui.js';
@@ -113,6 +114,17 @@ function printWordLibrary(): void {
     console.log('');
     rejects.forEach(r => {
       console.log(`     ${r.keyword} (评分: ${r.score ?? '?'}) - ${r.reason || '无理由'}`);
+    });
+    console.log('');
+  }
+
+  // Steam 新发售捕获（P0：自动发现新游戏名的落地清单）
+  const steamGames = querySteamGames(15);
+  if (steamGames.length > 0) {
+    console.log(chalk.green('  🎮 Steam 新发售捕获:'));
+    console.log('');
+    steamGames.forEach(g => {
+      console.log(`     [${g.appid}] ${g.title}  (${fmtLocalTime(g.first_seen_at)})`);
     });
     console.log('');
   }

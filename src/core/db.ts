@@ -86,6 +86,14 @@ function initTables(database: Database.Database): void {
       checked_at TEXT NOT NULL
     );
 
+    -- Steam 新发售游戏捕获（P0：雷达自动发现新游戏名的落地表）
+    CREATE TABLE IF NOT EXISTS steam_games (
+      appid         TEXT NOT NULL UNIQUE,
+      title         TEXT NOT NULL,
+      first_seen_at TEXT NOT NULL,
+      last_seen_at  TEXT NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_words_score ON words(score DESC);
     CREATE INDEX IF NOT EXISTS idx_words_action ON words(action);
     CREATE INDEX IF NOT EXISTS idx_runs_run_at ON runs(run_at);
@@ -487,6 +495,44 @@ export function insertRadarRun(
     .prepare(`INSERT INTO runs (run_at, category, seeds, candidates_count, validated_count, duration_ms)
               VALUES (?, ?, ?, ?, ?, ?)`)
     .run(new Date().toISOString(), category, JSON.stringify(seeds), candidatesCount, validatedCount, durationMs);
+}
+
+// ─────────────────────────────────────────────────────────────
+// Steam 新发售捕获（P0 缺口：雷达自动发现新游戏名）
+//   - upsertSteamGame: 捕获的游戏名入库（appid 去重）
+//   - querySteamGames: 查询已捕获游戏（--list / webui 展示）
+// 游戏名不进 words 表：保持词库"候选词"语义纯净，
+// 攻略长尾词由内环 suggest 挖掘后走 upsertRadarWord 入库。
+// ─────────────────────────────────────────────────────────────
+
+/** 捕获的 Steam 游戏入库（appid 唯一） */
+export function upsertSteamGame(appid: string, title: string): { created: boolean } {
+  const database = getDb();
+  const now = new Date().toISOString();
+
+  const existing = database
+    .prepare('SELECT appid FROM steam_games WHERE appid = ?')
+    .get(appid);
+
+  if (existing) {
+    database
+      .prepare('UPDATE steam_games SET last_seen_at = ? WHERE appid = ?')
+      .run(now, appid);
+    return { created: false };
+  }
+
+  database
+    .prepare('INSERT INTO steam_games (appid, title, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?)')
+    .run(appid, title, now, now);
+  return { created: true };
+}
+
+/** 查询已捕获的 Steam 游戏（最近捕获优先） */
+export function querySteamGames(limit = 20): Array<{ appid: string; title: string; first_seen_at: string }> {
+  const database = getDb();
+  return database
+    .prepare('SELECT appid, title, first_seen_at FROM steam_games ORDER BY first_seen_at DESC LIMIT ?')
+    .all(limit) as Array<{ appid: string; title: string; first_seen_at: string }>;
 }
 
 // ─────────────────────────────────────────────────────────────
