@@ -28,6 +28,7 @@ import { registry } from './core/registry.js';
 import { runPipeline } from './core/pipeline.js';
 import {
   queryWords,
+  queryRecentWords,
   queryRejects,
   queryRuns,
   queryRequirements,
@@ -74,6 +75,20 @@ function printWordLibrary(): void {
     words.forEach(w => {
       const action = w.action === 'register-now' ? '🚀' : w.action === 'watch' ? '👀' : '⛔';
       console.log(`  | ${w.keyword} | ${w.score} | ${w.volume_level} | ${w.competition} | ${action} | ${w.seen_count}次 | ${w.chinese_meaning || '—'} |`);
+    });
+    console.log('');
+  }
+
+  // 最近发现/更新的词（雷达常驻模式下看新词用）
+  const recent = queryRecentWords(15);
+  if (recent.length > 0) {
+    console.log(chalk.green('  🆕 最近发现/更新的词:'));
+    console.log('');
+    console.log('  | 关键词 | 量级 | 来源 | 出现 | 最近时间 |');
+    console.log('  |--------|------|------|------|----------|');
+    recent.forEach(w => {
+      const time = w.last_seen_at.slice(5, 16).replace('T', ' ');
+      console.log(`  | ${w.keyword} | ${w.volume_level} | ${w.source || '—'} | ${w.seen_count}次 | ${time} |`);
     });
     console.log('');
   }

@@ -145,6 +145,17 @@ export function queryWords(limit = 20, action?: string): WordRow[] {
 }
 
 /**
+ * 查询最近发现/更新的词（雷达常驻模式下看新词用）
+ * 按 last_seen_at 倒序：被内环重复发现的词也会冒到前面
+ */
+export function queryRecentWords(limit = 15): WordRow[] {
+  const database = getDb();
+  return database
+    .prepare('SELECT * FROM words ORDER BY last_seen_at DESC LIMIT ?')
+    .all(limit) as WordRow[];
+}
+
+/**
  * 查询淘汰池
  */
 export function queryRejects(limit = 20): Array<{ keyword: string; reason: string | null; score: number | null; rejected_at: string }> {
