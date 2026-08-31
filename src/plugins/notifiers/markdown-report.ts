@@ -93,15 +93,15 @@ export function generateMarkdown(result: FindResult): string {
   if (result.validated.length > 0) {
     lines.push('## 推荐词（按评分排序）');
     lines.push('');
-    lines.push('| # | 关键词 | 中文 | 评分 | 来源 | 量级 | 趋势 | 难度 | 变现 | 域名 |');
-    lines.push('|---|--------|------|------|------|------|------|------|------|------|');
+    lines.push('| # | 关键词 | 中文 | 评分 | 置信度 | 来源 | 量级 | 趋势 | 难度 | 变现 | 域名 |');
+    lines.push('|---|--------|------|------|--------|------|------|------|------|------|------|');
 
     result.validated.forEach((kw, i) => {
       const domain = kw.domainAvailable
         ? `✅ ${kw.availableDomains[0] || ''}`
         : '❌';
       lines.push(
-        `| ${i + 1} | **${kw.keyword}**${kw.intel.brandRisk ? ' ⚠' : ''} | ${kw.intel.chineseMeaning || '—'} | ${kw.score} | ${sourceLabel(kw.source)} | ${volumeLabel(kw.intel.volumeLevel)} | ${trendDirectionLabel(kw.intel.trendDirection)} | ${difficultyLevelLabel(kw.intel.devDifficulty)} | ${monetizationLabel(kw.intel.monetization)} | ${domain} |`
+        `| ${i + 1} | **${kw.keyword}**${kw.intel.brandRisk ? ' ⚠' : ''} | ${kw.intel.chineseMeaning || '—'} | ${kw.score} | ${kw.confidenceScore}% | ${sourceLabel(kw.source)} | ${volumeLabel(kw.intel.volumeLevel)} | ${trendDirectionLabel(kw.intel.trendDirection)} | ${difficultyLevelLabel(kw.intel.devDifficulty)} | ${monetizationLabel(kw.intel.monetization)} | ${domain} |`
       );
     });
 
@@ -136,6 +136,8 @@ export function generateMarkdown(result: FindResult): string {
       }
       lines.push('');
       lines.push(`- **评分**: ${kw.score}/100（趋势${kw.scoreBreakdown.trendScore} + 竞争${kw.scoreBreakdown.competitionScore} + 域名${kw.scoreBreakdown.domainScore} + 词形${kw.scoreBreakdown.lengthScore}）`);
+      lines.push(`- **证据置信度**: ${kw.confidenceScore}%（${kw.confidenceLevel}），验证时间 ${kw.validatedAt.toISOString()}`);
+      lines.push(`- **验证覆盖**: ${kw.validationEvidence.map(e => `${e.dimension}:${e.status}/${e.confidence}%`).join(' | ') || '无验证证据'}`);
       lines.push(`- **来源**: ${sourceLabel(kw.source)}（词根: ${kw.seedWord}）`);
       lines.push(`- **趋势**: ${kw.trendType === 'breakout' ? '🔥 Breakout' : `📈 +${(kw.growthPercent || 0).toLocaleString()}%`}`);
       lines.push(`- **搜索量级**: ${volumeLabel(intel.volumeLevel)}${intel.volumeAvg !== undefined ? `（指数 ${intel.volumeAvg}）` : ''}`);

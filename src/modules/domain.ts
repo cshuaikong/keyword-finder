@@ -48,42 +48,38 @@ async function isRegisteredByRdap(domain: string): Promise<boolean | null> {
  * 双重检查：DNS + RDAP
  */
 export async function isDomainAvailable(domain: string): Promise<boolean> {
-  try {
-    // 尝试解析 A 记录
-    await dns.resolve4(domain);
-    return false; // 有 A 记录，域名已被使用
-  } catch {
-    // A 记录不存在，继续检查其他记录
+  return (await inspectDomain(domain)).status === 'available';
+}
+
+type DomainCheckStatus = 'available' | 'taken' | 'uncertain';
+
+function isMissingDnsRecord(err: any): boolean {
+  return ['ENOTFOUND', 'ENODATA', 'ENODOMAIN', 'NXDOMAIN'].includes(err?.code);
+}
+
+async function inspectDomain(domain: string): Promise<{ status: DomainCheckStatus; reason: string }> {
+  let dnsUncertain = false;
+  const resolvers: Array<(name: string) => Promise<unknown[]>> = [
+    name => dns.resolve4(name),
+    name => dns.resolveMx(name),
+    name => dns.resolveNs(name),
+  ];
+  for (const resolveRecord of resolvers) {
+    try {
+      const records = await resolveRecord(domain);
+      if (Array.isArray(records) && records.length > 0) return { status: 'taken', reason: 'DNS 记录存在' };
+    } catch (err: any) {
+      if (!isMissingDnsRecord(err)) dnsUncertain = true;
+    }
   }
 
-  try {
-    // 尝试解析 MX 记录（邮件服务器）
-    await dns.resolveMx(domain);
-    return false; // 有 MX 记录，域名已被使用
-  } catch {
-    // MX 记录不存在
-  }
-
-  try {
-    // 尝试解析 NS 记录
-    await dns.resolveNs(domain);
-    return false; // 有 NS 记录，域名已被使用
-  } catch {
-    // NS 记录不存在
-  }
-
-  // DNS 全部无记录，再查 RDAP 确认是否已注册但未建站
-  // 注意：RDAP 对部分后缀（.io/.co）支持不稳定，无法判断时只信 DNS 结果
-  try {
-    const registered = await isRegisteredByRdap(domain);
-    if (registered === true) return false;
-    // registered === false 或 null 都继续，按 DNS 结果处理
-  } catch {
-    // RDAP 查询失败，只信 DNS 结果
-  }
-
-  // DNS 无记录 + RDAP 未注册 → 可以注册
-  return true;
+  const registered = await isRegisteredByRdap(domain);
+  if (registered === true) return { status: 'taken', reason: 'RDAP 已注册' };
+  if (registered === false) return { status: 'available', reason: 'RDAP 确认未注册' };
+  return {
+    status: 'uncertain',
+    reason: dnsUncertain ? 'DNS/RDAP 请求失败' : '无 DNS 记录但 RDAP 无法确认',
+  };
 }
 
 /**
@@ -105,38 +101,45 @@ export function keywordToDomain(keyword: string): string {
 export async function checkDomainAvailability(keyword: string): Promise<{
   available: string[];
   taken: string[];
+  uncertain: string[];
   anyAvailable: boolean;
+  confidence: number;
 }> {
   const baseDomain = keywordToDomain(keyword);
 
   // 跳过过短或过长的域名
   if (baseDomain.length < 3 || baseDomain.length > 30) {
-    return { available: [], taken: [], anyAvailable: false };
+    return { available: [], taken: [], uncertain: [], anyAvailable: false, confidence: 0 };
   }
 
   const available: string[] = [];
   const taken: string[] = [];
+  const uncertain: string[] = [];
 
   // 并行检查所有后缀（DNS 查询很快）
   const checks = DOMAIN_SUFFIXES.map(async (suffix) => {
     const fullDomain = baseDomain + suffix;
-    const isAvailable = await isDomainAvailable(fullDomain);
-    return { domain: fullDomain, available: isAvailable };
+    const check = await inspectDomain(fullDomain);
+    return { domain: fullDomain, ...check };
   });
 
   const results = await Promise.all(checks);
 
   for (const r of results) {
-    if (r.available) {
+    if (r.status === 'available') {
       available.push(r.domain);
-    } else {
+    } else if (r.status === 'taken') {
       taken.push(r.domain);
+    } else {
+      uncertain.push(r.domain);
     }
   }
 
   return {
     available,
     taken,
+    uncertain,
     anyAvailable: available.length > 0,
+    confidence: Math.round(((available.length + taken.length) / Math.max(results.length, 1)) * 100),
   };
 }

@@ -29,6 +29,10 @@ export type PluginType = 'source' | 'extractor' | 'analyzer' | 'scorer' | 'notif
 
 /** 一次 pipeline 运行的共享上下文 */
 export interface RunContext {
+  /** 本次持久化运行记录 ID，用于关联阶段日志 */
+  runId?: number;
+  /** 复查执行器设为 false，避免持久化插件在任务完成前重建同一任务 */
+  scheduleReviews?: boolean;
   /** 本次运行的分类 */
   category: 'game' | 'ai' | 'all';
   /** 本次选取的词根 */
@@ -74,8 +78,10 @@ export interface ExtractorPlugin {
  * 每个分析器只贡献自己负责的维度，pipeline 合并所有分析器结果
  */
 export interface AnalyzerResult {
+  /** 本维度验证的可追踪证据，可用于历史记录与置信度计算 */
+  evidence?: ValidationEvidence[];
   /** 域名可用性（domain 分析器） */
-  domain?: { available: string[]; taken: string[]; anyAvailable: boolean };
+  domain?: { available: string[]; taken: string[]; uncertain?: string[]; anyAvailable: boolean; confidence?: number };
   /** 竞品分析（competition 分析器） */
   competition?: CompetitionInfo;
   /** 搜索量级与趋势（volume-trend 分析器） */
@@ -87,6 +93,20 @@ export interface AnalyzerResult {
   };
   /** 中文翻译（translate 分析器） */
   translation?: string;
+}
+
+export type ValidationDimension = 'volume' | 'competition' | 'domain' | 'translation';
+export type ValidationEvidenceStatus = 'success' | 'no-data' | 'failed' | 'fallback' | 'cached';
+
+export interface ValidationEvidence {
+  dimension: ValidationDimension;
+  status: ValidationEvidenceStatus;
+  /** 本维度自身可信度，0-100 */
+  confidence: number;
+  fromCache?: boolean;
+  checkedAt: Date;
+  result?: unknown;
+  error?: string;
 }
 
 /**

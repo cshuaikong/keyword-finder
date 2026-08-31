@@ -2,6 +2,8 @@
  * 全局类型定义
  */
 
+import type { ValidationEvidence } from './core/plugin.js';
+
 /** 从 Google Trends 发现的候选关键词 */
 export interface TrendingKeyword {
   /** 关键词文本 */
@@ -83,6 +85,11 @@ export interface ValidatedKeyword extends TrendingKeyword {
   scoreBreakdown: ScoreBreakdown;
   /** 额外情报 */
   intel: KeywordIntel;
+  /** 当前完整验证覆盖度与可信度（0-100） */
+  confidenceScore: number;
+  confidenceLevel: 'low' | 'medium' | 'high';
+  validatedAt: Date;
+  validationEvidence: ValidationEvidence[];
 }
 
 /** 竞品信息 */

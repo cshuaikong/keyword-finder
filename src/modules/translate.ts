@@ -9,7 +9,13 @@
 import { fetchJson } from '../modules/http.js';
 
 /** 简单内存缓存：同一进程内相同词只翻译一次 */
-const cache = new Map<string, string>();
+export interface TranslationResult {
+  text: string;
+  provider: 'google' | 'mymemory' | 'dictionary' | 'none';
+  fromCache: boolean;
+}
+
+const cache = new Map<string, Omit<TranslationResult, 'fromCache'>>();
 
 /** 本地常用词词典（离线兜底） */
 const LOCAL_DICT: Record<string, string> = {
@@ -102,20 +108,24 @@ async function tryMyMemory(text: string): Promise<string> {
  * 翻译英文关键词为中文（多级降级）
  */
 export async function translateToChinese(text: string): Promise<string> {
+  return (await translateToChineseDetailed(text)).text;
+}
+
+export async function translateToChineseDetailed(text: string): Promise<TranslationResult> {
   const key = text.toLowerCase().trim();
-  if (!key) return '';
+  if (!key) return { text: '', provider: 'none', fromCache: false };
 
   // 命中缓存直接返回
   if (cache.has(key)) {
-    return cache.get(key)!;
+    return { ...cache.get(key)!, fromCache: true };
   }
 
   // 1. Google Translate
   try {
     const zh = await tryGoogle(text);
     if (zh) {
-      cache.set(key, zh);
-      return zh;
+      cache.set(key, { text: zh, provider: 'google' });
+      return { text: zh, provider: 'google', fromCache: false };
     }
   } catch {
     // Google 失败（限流等），继续降级
@@ -125,8 +135,8 @@ export async function translateToChinese(text: string): Promise<string> {
   try {
     const zh = await tryMyMemory(text);
     if (zh) {
-      cache.set(key, zh);
-      return zh;
+      cache.set(key, { text: zh, provider: 'mymemory' });
+      return { text: zh, provider: 'mymemory', fromCache: false };
     }
   } catch {
     // MyMemory 失败，继续降级
@@ -135,12 +145,12 @@ export async function translateToChinese(text: string): Promise<string> {
   // 3. 本地词典兜底
   const dictZh = translateByDict(text);
   if (dictZh && dictZh !== text) {
-    cache.set(key, dictZh);
-    return dictZh;
+    cache.set(key, { text: dictZh, provider: 'dictionary' });
+    return { text: dictZh, provider: 'dictionary', fromCache: false };
   }
 
-  cache.set(key, '');
-  return '';
+  cache.set(key, { text: '', provider: 'none' });
+  return { text: '', provider: 'none', fromCache: false };
 }
 
 /**

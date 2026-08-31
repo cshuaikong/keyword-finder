@@ -13,9 +13,21 @@ export const volumeAnalyzer: AnalyzerPlugin = {
   async analyze(keyword) {
     try {
       const result = await getVolumeAndTrend(keyword.keyword);
-      return { volume: result };
-    } catch {
-      return {};
+      const evidence = {
+        dimension: 'volume' as const,
+        status: result.status === 'failed' ? 'failed' as const
+          : result.fromCache ? 'cached' as const
+          : result.status === 'no-data' ? 'no-data' as const : 'success' as const,
+        confidence: result.status === 'failed' ? 0 : result.status === 'no-data' ? 60 : result.fromCache ? 90 : 100,
+        fromCache: result.fromCache,
+        checkedAt: new Date(),
+        result,
+        error: result.status === 'failed' ? '量级服务请求失败或预算不足' : undefined,
+      };
+      if (result.status === 'failed') return { evidence: [evidence] };
+      return { volume: result, evidence: [evidence] };
+    } catch (err: any) {
+      return { evidence: [{ dimension: 'volume', status: 'failed', confidence: 0, checkedAt: new Date(), error: err?.message || String(err) }] };
     }
   },
 };

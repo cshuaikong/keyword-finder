@@ -8,7 +8,7 @@
  *   ④ 新词去重 → upsertRadarWord 轻量入库（volume_level=unknown）
  *
  * 外环·验证环（批量，每周）：
- *   ① queryUnverifiedWords 取未验证词（seen_count 高优先）
+ *   ① queryUnverifiedWords 取未验证词（证据优先级排序）
  *   ② getVolumeAndTrend 验证量级（缓存命中 0 额度，未命中 1 credit/词）
  *   ③ updateWordVolume 回写 words 表
  *
@@ -21,14 +21,18 @@ import { config } from '../config.js';
 import { getSeedsByDate } from '../seeds.js';
 import { findTrendingKeywords, getVolumeAndTrend } from './trends.js';
 import { suggestMine } from './suggest.js';
-import { captureNewReleases } from './steam-newreleases.js';
+import { runGameRadar } from './game-radar.js';
 import {
   upsertRadarWord,
   queryUnverifiedWords,
   updateWordVolume,
+  markWordValidationFailed,
   insertRadarRun,
-  getVolumeCache,
-  upsertSteamGame,
+  recordKeywordSignals,
+  getApiBudget,
+  recordValidationHistory,
+  cancelKeywordReviews,
+  scheduleKeywordReview,
 } from '../core/db.js';
 
 /** 延迟函数，用于限流 */
@@ -69,13 +73,22 @@ export async function runInnerLoop(date: Date = new Date()): Promise<InnerLoopRe
 
   // keyword -> source（同一词被两个引擎都发现时，保留信号更强的来源）
   const seen = new Map<string, string>();
+  const signals: Array<{ keyword: string; source: string; seed?: string; strength?: number; metadata?: Record<string, unknown> }> = [];
 
   // ① SerpAPI 飙升词（额度引擎，≤ radarSeedsPerDay credits）
   const trending = await findTrendingKeywords(seeds);
   for (const k of trending) {
     const key = k.keyword.toLowerCase().trim();
+    const source = k.trendType === 'breakout' ? 'trends:breakout' : 'trends';
+    if (key) signals.push({
+      keyword: key,
+      source,
+      seed: k.seedWord,
+      strength: k.trendType === 'breakout' ? 100 : 80,
+      metadata: { growthPercent: k.growthPercent },
+    });
     if (key && !seen.has(key)) {
-      seen.set(key, k.trendType === 'breakout' ? 'trends:breakout' : 'trends');
+      seen.set(key, source);
     }
   }
 
@@ -89,38 +102,24 @@ export async function runInnerLoop(date: Date = new Date()): Promise<InnerLoopRe
     for (const k of list) {
       const key = k.keyword.toLowerCase().trim();
       // suggest 来源过噪声预筛，SerpAPI 词不受限
-      if (key && !seen.has(key) && isViableKeyword(key)) {
-        seen.set(key, 'suggest');
-        added++;
+      if (key && isViableKeyword(key)) {
+        signals.push({ keyword: key, source: 'suggest', seed });
+        if (!seen.has(key)) {
+          seen.set(key, 'suggest');
+          added++;
+        }
       }
     }
     console.log(chalk.gray(`    [${seed}] suggest 挖到 ${list.length} 个长尾（预筛入库 ${added}）`));
   }
 
-  // ③ Steam 新发售捕获（0 额度）：游戏名 → suggest 挖攻略长尾
-  // P0 缺口：此前新游戏发售雷达不知道（如 8/27 Zero Company），攻略词窗口错过
-  // 游戏名写入 steam_games 表（不进 words 表），长尾词按 suggest 来源入库
+  // ③ 游戏优先雷达：三类 Steam 列表全部入持久化队列，再限量消费扩词。
   let steamGames = 0;
-  console.log(chalk.gray('  🎮 Steam 新发售捕获（免费）...'));
   try {
-    const newGames = await captureNewReleases();
-    for (const g of newGames) {
-      upsertSteamGame(g.appid, g.title);
-      steamGames++;
-      const list = await suggestMine(g.title, config.suggestDelay, { patternsOnly: true });
-      let added = 0;
-      for (const k of list) {
-        const key = k.keyword.toLowerCase().trim();
-        if (key && !seen.has(key) && isViableKeyword(key)) {
-          seen.set(key, 'suggest');
-          added++;
-        }
-      }
-      console.log(chalk.gray(`    [${g.title}] suggest 挖到 ${list.length} 个长尾（入库 ${added}）`));
-    }
-    if (steamGames === 0) console.log(chalk.gray('    无新发售游戏（缓存命中，跳过）'));
+    const gameResult = await runGameRadar(config.gameAnalysisBatch);
+    steamGames = gameResult.created;
   } catch (err: any) {
-    console.log(chalk.gray(`    Steam 源失败（跳过，不影响本轮）: ${err?.message || err}`));
+    console.log(chalk.gray(`    游戏雷达失败（跳过，不影响通用找词）: ${err?.message || err}`));
   }
 
   // ④ 轻量入库
@@ -129,6 +128,7 @@ export async function runInnerLoop(date: Date = new Date()): Promise<InnerLoopRe
     const r = upsertRadarWord(key, source);
     if (r.created) created++;
   }
+  recordKeywordSignals(signals);
 
   const duration = Date.now() - started;
   insertRadarRun('radar-inner', seeds, seen.size, created, duration);
@@ -139,45 +139,75 @@ export async function runInnerLoop(date: Date = new Date()): Promise<InnerLoopRe
 
 /**
  * 外环：验证（批量，每周运行）
- * 队列来自 queryUnverifiedWords（seen_count 高优先），
+ * 队列来自 queryUnverifiedWords（跨源、强度、新鲜度综合优先），
  * getVolumeAndTrend 内部命中缓存则 0 额度
  */
 export async function runOuterLoop(
   batch: number = config.radarVerifyBatch,
-): Promise<{ verified: number; fromCache: number }> {
+): Promise<{ verified: number; noData: number; failed: number; fromCache: number }> {
   const started = Date.now();
-  const queue = queryUnverifiedWords(batch);
-  console.log(chalk.cyan(`\n🔬 [外环·验证] 队列 ${queue.length} 词（seen_count 优先）`));
+  const budget = getApiBudget('serpapi', config.serpapiMonthlyBudget, config.serpapiReserve);
+  const effectiveBatch = Math.min(batch, budget.spendableRemaining);
+  const queue = queryUnverifiedWords(effectiveBatch);
+  console.log(chalk.cyan(`\n🔬 [外环·验证] 队列 ${queue.length} 词（证据优先级排序）`));
+  console.log(chalk.gray(`  SerpAPI 预算: 已用 ${budget.used}/${budget.monthlyBudget}，可自动使用 ${budget.spendableRemaining}，保留 ${budget.reserve}`));
 
   if (queue.length === 0) {
-    console.log(chalk.gray('  队列为空，无需验证'));
+    console.log(chalk.gray(effectiveBatch === 0 ? '  自动预算已用尽，本轮不发起付费验证' : '  队列为空，无需验证'));
     insertRadarRun('radar-outer', [], 0, 0, Date.now() - started);
-    return { verified: 0, fromCache: 0 };
+    return { verified: 0, noData: 0, failed: 0, fromCache: 0 };
   }
 
   let verified = 0;
+  let noData = 0;
+  let failed = 0;
   let fromCache = 0;
 
   for (let i = 0; i < queue.length; i++) {
     const word = queue[i];
-    const cached = getVolumeCache(word.keyword); // 预查仅用于显示，不耗额度
     const v = await getVolumeAndTrend(word.keyword); // 内部命中缓存则 0 额度
-    updateWordVolume(word.keyword, v);
+    const evidence = {
+      dimension: 'volume' as const,
+      status: v.status === 'failed' ? 'failed' as const
+        : v.fromCache ? 'cached' as const
+        : v.status === 'no-data' ? 'no-data' as const : 'success' as const,
+      confidence: v.status === 'failed' ? 0 : v.status === 'no-data' ? 60 : v.fromCache ? 90 : 100,
+      fromCache: v.fromCache,
+      checkedAt: new Date(),
+      result: v,
+      error: v.status === 'failed' ? '量级服务请求失败或预算不足' : undefined,
+    };
+    if (v.status === 'failed') {
+      failed++;
+      markWordValidationFailed(word.keyword);
+    } else {
+      updateWordVolume(word.keyword, v);
+      if (v.status === 'success') verified++;
+      else noData++;
+    }
+    if (v.fromCache) fromCache++;
+    const confidence = recordValidationHistory(word.keyword, [evidence]);
+    cancelKeywordReviews(word.keyword);
+    if (v.status === 'failed') {
+      scheduleKeywordReview(word.keyword, 'volume', '搜索量验证失败', 1);
+    } else if (v.status === 'no-data') {
+      scheduleKeywordReview(word.keyword, 'volume', '搜索量暂无数据，等待再次确认', 7);
+    } else if (confidence.score < 70) {
+      scheduleKeywordReview(word.keyword, 'full', '量级已确认，等待完整验证', 3);
+    }
 
-    if (cached) fromCache++;
-    else verified++;
-
-    const cacheTag = cached ? ' [缓存]' : '';
+    const cacheTag = v.fromCache ? ' [缓存]' : '';
+    const statusTag = v.status === 'failed' ? '失败，等待重试' : v.status === 'no-data' ? '无数据' : '成功';
     console.log(
-      `  [${i + 1}/${queue.length}] ${word.keyword} → ${v.volumeLevel} (avg ${v.volumeAvg ?? '?'}) ${v.trendDirection}${cacheTag}`,
+      `  [${i + 1}/${queue.length}] ${word.keyword} (优先级 ${word.priority_score ?? 0}) → ${v.volumeLevel} (avg ${v.volumeAvg ?? '?'}) ${v.trendDirection} [${statusTag}]${cacheTag}`,
     );
 
     if (i < queue.length - 1) await sleep(1000); // 外环限流
   }
 
   const duration = Date.now() - started;
-  insertRadarRun('radar-outer', [], verified, fromCache, duration);
+  insertRadarRun('radar-outer', [], queue.length, verified + noData, duration);
 
-  console.log(chalk.green(`\n✅ 外环完成: 验证 ${verified} 词（缓存命中 ${fromCache}），耗时 ${(duration / 1000).toFixed(0)}s`));
-  return { verified, fromCache };
+  console.log(chalk.green(`\n✅ 外环完成: 成功 ${verified}，无数据 ${noData}，失败 ${failed}，缓存命中 ${fromCache}，耗时 ${(duration / 1000).toFixed(0)}s`));
+  return { verified, noData, failed, fromCache };
 }

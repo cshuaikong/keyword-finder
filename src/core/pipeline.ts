@@ -16,6 +16,8 @@ import { buildIntel, detectBrandRisk } from '../modules/assess.js';
 import { registry } from './registry.js';
 import { clusterKeywords } from './cluster.js';
 import { printSummary } from './summary.js';
+import { finishRun, recordKeywordSignals, recordRunStep, startRun } from './db.js';
+import { calculateConfidence } from './confidence.js';
 import type {
   RunContext,
   SourcePlugin,
@@ -52,6 +54,7 @@ function mergeCandidates(...lists: TrendingKeyword[][]): TrendingKeyword[] {
 function mergeAnalyzerResults(results: AnalyzerResult[]): AnalyzerResult {
   const merged: AnalyzerResult = {};
   for (const r of results) {
+    if (r.evidence) merged.evidence = [...(merged.evidence || []), ...r.evidence];
     if (r.domain) merged.domain = r.domain;
     if (r.competition) merged.competition = r.competition;
     if (r.volume) merged.volume = r.volume;
@@ -130,12 +133,90 @@ function sampleAcrossSources(candidates: TrendingKeyword[], limit: number): Tren
   return picked;
 }
 
+/** 对单个指定关键词执行完整验证，供发现流程与定时复查共同复用。 */
+export async function validateCandidate(
+  candidate: TrendingKeyword,
+  ctx: RunContext,
+): Promise<{ validated: ValidatedKeyword; errors: string[] }> {
+  const errors: string[] = [];
+  const analyzers = registry.enabled<AnalyzerPlugin>('analyzer', config.disablePlugins);
+  const scorer = registry.enabled<ScorerPlugin>('scorer', config.disablePlugins)[0];
+  const analyzerResults = await Promise.allSettled(
+    analyzers.map(analyzer => analyzer.analyze(candidate, ctx)),
+  );
+  const successfulResults: AnalyzerResult[] = [];
+  analyzerResults.forEach((analyzerResult, index) => {
+    if (analyzerResult.status === 'fulfilled') {
+      successfulResults.push(analyzerResult.value);
+    } else {
+      const analyzer = analyzers[index];
+      const message = analyzerResult.reason?.message || String(analyzerResult.reason);
+      errors.push(`analyzer:${analyzer.name}:${candidate.keyword}: ${message}`);
+      if (ctx.runId) recordRunStep(ctx.runId, `analyzer:${analyzer.name}`, 'failed', {
+        error: `${candidate.keyword}: ${message}`,
+      });
+    }
+  });
+
+  const analyzed = mergeAnalyzerResults(successfulResults);
+  const validationEvidence = analyzed.evidence || [];
+  const confidence = calculateConfidence(validationEvidence);
+  for (const evidence of validationEvidence.filter(item => item.status === 'failed')) {
+    const message = evidence.error || `${evidence.dimension} 验证失败`;
+    errors.push(`validation:${evidence.dimension}:${candidate.keyword}: ${message}`);
+    if (ctx.runId) recordRunStep(ctx.runId, `validation:${evidence.dimension}`, 'failed', {
+      error: `${candidate.keyword}: ${message}`,
+    });
+  }
+
+  const domainResult = analyzed.domain ?? { available: [], taken: [], anyAvailable: false };
+  const competition = analyzed.competition ?? {
+    topDomains: [], hasAuthority: false, resultCount: 0, difficulty: 'medium' as const,
+  };
+  const { score, breakdown } = scorer
+    ? scorer.score(candidate, analyzed, ctx)
+    : { score: 0, breakdown: { trendScore: 0, competitionScore: 0, domainScore: 0, lengthScore: 0 } };
+  const intel = buildIntel({
+    keyword: candidate.keyword,
+    chineseMeaning: analyzed.translation || '',
+    volumeLevel: analyzed.volume?.volumeLevel ?? 'unknown',
+    volumeAvg: analyzed.volume?.volumeAvg,
+    trendDirection: analyzed.volume?.trendDirection ?? 'unknown',
+    trendNote: analyzed.volume?.trendNote,
+    score,
+    domainAvailable: domainResult.anyAvailable,
+    competition,
+    confidenceScore: confidence.score,
+  });
+
+  return {
+    errors,
+    validated: {
+      ...candidate,
+      domainAvailable: domainResult.anyAvailable,
+      availableDomains: domainResult.available,
+      competition,
+      score,
+      scoreBreakdown: breakdown,
+      intel,
+      confidenceScore: confidence.score,
+      confidenceLevel: confidence.level,
+      validatedAt: new Date(),
+      validationEvidence,
+    },
+  };
+}
+
 /**
  * 执行一次找词流程
  */
-export async function runPipeline(category: 'game' | 'ai' | 'all' = 'all'): Promise<FindResult> {
+async function runPipelineInternal(
+  category: 'game' | 'ai' | 'all',
+  runId: number,
+): Promise<{ result: FindResult; errors: string[] }> {
   const startTime = Date.now();
   const runAt = new Date();
+  const errors: string[] = [];
 
   console.log(chalk.cyan('╔══════════════════════════════════════════╗'));
   console.log(chalk.cyan('║     🔑 自动找词工具 v2.0（插件化）       ║'));
@@ -145,7 +226,7 @@ export async function runPipeline(category: 'game' | 'ai' | 'all' = 'all'): Prom
 
   // Step 1: 随机选取词根
   const seeds = getRandomSeeds(config.seedsPerRun, category);
-  const ctx: RunContext = { category, seeds, startedAt: runAt };
+  const ctx: RunContext = { category, seeds, startedAt: runAt, runId };
   console.log(chalk.yellow(`📌 本次选取 ${seeds.length} 个词根: ${seeds.join(', ')}`));
 
   // Step 2: 并行运行所有数据源插件（词根驱动 + 自发抓取）
@@ -167,10 +248,19 @@ export async function runPipeline(category: 'game' | 'ai' | 'all' = 'all'): Prom
     }),
   );
 
-  for (const result of sourceResults) {
+  for (let i = 0; i < sourceResults.length; i++) {
+    const result = sourceResults[i];
+    const source = sources[i];
     if (result.status === 'fulfilled') {
       if (result.value.candidates) trendsCandidates.push(...result.value.candidates);
       if (result.value.items) items.push(...result.value.items);
+      recordRunStep(runId, `source:${source.name}`, 'succeeded', {
+        itemCount: (result.value.candidates?.length || 0) + (result.value.items?.length || 0),
+      });
+    } else {
+      const message = result.reason?.message || String(result.reason);
+      errors.push(`source:${source.name}: ${message}`);
+      recordRunStep(runId, `source:${source.name}`, 'failed', { error: message });
     }
   }
 
@@ -178,15 +268,45 @@ export async function runPipeline(category: 'game' | 'ai' | 'all' = 'all'): Prom
   const sourceStats = Object.entries(stats)
     .map(([name, count]) => `${name}=${count}条`)
     .join(', ');
-  console.log(chalk.gray(`  数据源统计: ${sourceStats || '全部失败'}`));
+  console.log(chalk.gray(`  数据源统计: ${sourceStats || (sources.length === 0 ? '全部禁用' : '全部失败')}`));
 
   // Step 3: 提取器插件：原始条目 → 候选词
   let socialCandidates: TrendingKeyword[] = [];
   const extractors = registry.enabled<ExtractorPlugin>('extractor', config.disablePlugins);
   for (const extractor of extractors) {
-    socialCandidates = socialCandidates.concat(extractor.extract(items, ctx));
+    try {
+      const extracted = extractor.extract(items, ctx);
+      socialCandidates = socialCandidates.concat(extracted);
+      recordRunStep(runId, `extractor:${extractor.name}`, 'succeeded', { itemCount: extracted.length });
+    } catch (err: any) {
+      const message = err?.message || String(err);
+      errors.push(`extractor:${extractor.name}: ${message}`);
+      recordRunStep(runId, `extractor:${extractor.name}`, 'failed', { error: message });
+    }
   }
   console.log(chalk.gray(`  社交源提取: ${socialCandidates.length} 个候选词`));
+
+  const discoveredSignals = [...trendsCandidates, ...socialCandidates];
+  try {
+    recordKeywordSignals(discoveredSignals.map(candidate => ({
+      keyword: candidate.keyword,
+      source: candidate.trendType === 'breakout' && candidate.source === 'trends'
+        ? 'trends:breakout'
+        : (candidate.source || 'unknown'),
+      seed: candidate.seedWord,
+      observedAt: candidate.discoveredAt,
+      runId,
+      metadata: {
+        trendType: candidate.trendType,
+        growthPercent: candidate.growthPercent,
+      },
+    })));
+    recordRunStep(runId, 'signals', 'succeeded', { itemCount: discoveredSignals.length });
+  } catch (err: any) {
+    const message = err?.message || String(err);
+    errors.push(`signals: ${message}`);
+    recordRunStep(runId, 'signals', 'failed', { error: message });
+  }
 
   // Step 4: 合并去重
   const candidates: TrendingKeyword[] = mergeCandidates(trendsCandidates, socialCandidates);
@@ -198,13 +318,13 @@ export async function runPipeline(category: 'game' | 'ai' | 'all' = 'all'): Prom
     console.log('   - 数据源全部失败（检查代理设置）');
     console.log('   - 当前词根没有相关飙升词');
 
-    return {
+    return { result: {
       runAt,
       seedsUsed: seeds,
       candidates: [],
       validated: [],
       duration: Date.now() - startTime,
-    };
+    }, errors };
   }
 
   // Step 4.5: 本地预筛（不消耗 API）
@@ -214,59 +334,23 @@ export async function runPipeline(category: 'game' | 'ai' | 'all' = 'all'): Prom
   // Step 5: 验证候选词（分析器并行 → 评分器 → 情报组装）
   console.log(chalk.yellow(`\n🔬 开始验证前 ${config.verifyPerRun} 个候选词（跨源均衡采样）...\n`));
 
-  const analyzers = registry.enabled<AnalyzerPlugin>('analyzer', config.disablePlugins);
-  const scorer = registry.enabled<ScorerPlugin>('scorer', config.disablePlugins)[0];
-
   const validated: ValidatedKeyword[] = [];
   const toValidate = sampleAcrossSources(preFiltered, config.verifyPerRun);
+  let analyzerFailureCount = 0;
 
   for (let i = 0; i < toValidate.length; i++) {
     const candidate = toValidate[i];
     console.log(`[${i + 1}/${toValidate.length}] 验证: "${candidate.keyword}"`);
 
-    // 分析器并行执行（等价于原代码的四路 Promise.all）
-    const analyzerResults = await Promise.all(
-      analyzers.map(analyzer => analyzer.analyze(candidate, ctx)),
-    );
-    const analyzed = mergeAnalyzerResults(analyzerResults);
+    const outcome = await validateCandidate(candidate, ctx);
+    validated.push(outcome.validated);
+    errors.push(...outcome.errors);
+    analyzerFailureCount += outcome.errors.length;
 
-    // 无结果时用安全默认值兜底
-    const domainResult = analyzed.domain ?? { available: [], taken: [], anyAvailable: false };
-    const competition = analyzed.competition ?? {
-      topDomains: [], hasAuthority: false, resultCount: 0, difficulty: 'medium' as const,
-    };
-
-    // 计算综合评分
-    const { score, breakdown } = scorer
-      ? scorer.score(candidate, analyzed, ctx)
-      : { score: 0, breakdown: { trendScore: 0, competitionScore: 0, domainScore: 0, lengthScore: 0 } };
-
-    // 组装情报（难度/变现/站型/行动建议）
-    const intel = buildIntel({
-      keyword: candidate.keyword,
-      chineseMeaning: analyzed.translation || '',
-      volumeLevel: analyzed.volume?.volumeLevel ?? 'unknown',
-      volumeAvg: analyzed.volume?.volumeAvg,
-      trendDirection: analyzed.volume?.trendDirection ?? 'unknown',
-      trendNote: analyzed.volume?.trendNote,
-      score,
-      domainAvailable: domainResult.anyAvailable,
-      competition,
-    });
-
-    validated.push({
-      ...candidate,
-      domainAvailable: domainResult.anyAvailable,
-      availableDomains: domainResult.available,
-      competition,
-      score,
-      scoreBreakdown: breakdown,
-      intel,
-    });
-
-    const scoreColor = score >= 60 ? chalk.green : score >= 40 ? chalk.yellow : chalk.red;
-    const volLabel = intel.volumeLevel === 'unknown' ? '量级:?' : `量级:${intel.volumeLevel}`;
-    console.log(`  → 评分: ${scoreColor(String(score))} | 竞争: ${competition.difficulty} | 域名: ${domainResult.anyAvailable ? '✅' : '❌'} | ${volLabel} | ${intel.chineseMeaning || '—'}`);
+    const item = outcome.validated;
+    const scoreColor = item.score >= 60 ? chalk.green : item.score >= 40 ? chalk.yellow : chalk.red;
+    const volLabel = item.intel.volumeLevel === 'unknown' ? '量级:?' : `量级:${item.intel.volumeLevel}`;
+    console.log(`  → 评分: ${scoreColor(String(item.score))} | 置信度: ${item.confidenceScore}% | 竞争: ${item.competition.difficulty} | 域名: ${item.domainAvailable ? '✅' : '❌'} | ${volLabel} | ${item.intel.chineseMeaning || '—'}`);
 
     // 每个验证之间稍作等待
     if (i < toValidate.length - 1) {
@@ -293,8 +377,46 @@ export async function runPipeline(category: 'game' | 'ai' | 'all' = 'all'): Prom
   // Step 8: 输出插件（报告生成 / Telegram 推送 / 数据库存储）
   const notifiers = registry.enabled<NotifierPlugin>('notifier', config.disablePlugins);
   for (const notifier of notifiers) {
-    await notifier.notify(result, ctx);
+    const startedAt = new Date();
+    try {
+      await notifier.notify(result, ctx);
+      recordRunStep(runId, `output:${notifier.name}`, 'succeeded', {
+        itemCount: result.validated.length,
+        startedAt,
+      });
+    } catch (err: any) {
+      const message = err?.message || String(err);
+      errors.push(`output:${notifier.name}: ${message}`);
+      recordRunStep(runId, `output:${notifier.name}`, 'failed', { error: message, startedAt });
+      console.log(chalk.yellow(`  ⚠ 输出插件 ${notifier.name} 失败，其他输出继续执行`));
+    }
   }
 
-  return result;
+  if (analyzerFailureCount === 0) {
+    recordRunStep(runId, 'analysis', 'succeeded', { itemCount: validated.length });
+  }
+
+  return { result, errors };
+}
+
+/** 公开入口：任何空结果、部分失败或异常都会留下持久化运行记录。 */
+export async function runPipeline(category: 'game' | 'ai' | 'all' = 'all'): Promise<FindResult> {
+  const started = Date.now();
+  const runId = startRun(category);
+  try {
+    const { result, errors } = await runPipelineInternal(category, runId);
+    finishRun(runId, errors.length > 0 ? 'partial' : 'succeeded', {
+      seeds: result.seedsUsed,
+      candidates: result.candidates.length,
+      validated: result.validated.length,
+      durationMs: Date.now() - started,
+      error: errors.length > 0 ? errors.join('\n').slice(0, 4000) : undefined,
+    });
+    return result;
+  } catch (err: any) {
+    const message = err?.message || String(err);
+    recordRunStep(runId, 'pipeline', 'failed', { error: message });
+    finishRun(runId, 'failed', { durationMs: Date.now() - started, error: message });
+    throw err;
+  }
 }

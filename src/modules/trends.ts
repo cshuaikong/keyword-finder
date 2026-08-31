@@ -12,8 +12,26 @@
 
 import { config } from '../config.js';
 import { fetchJson } from './http.js';
-import { getVolumeCache, setVolumeCache, getTrendSeedCache, setTrendSeedCache } from '../core/db.js';
+import {
+  canSpendApi,
+  getApiBudget,
+  getVolumeCache,
+  setVolumeCache,
+  getTrendSeedCache,
+  setTrendSeedCache,
+  recordApiUsage,
+} from '../core/db.js';
 import type { TrendingKeyword, VolumeLevel, TrendDirection } from '../types.js';
+
+export type VolumeValidationStatus = 'success' | 'no-data' | 'failed';
+export interface VolumeValidationResult {
+  volumeLevel: VolumeLevel;
+  volumeAvg?: number;
+  trendDirection: TrendDirection;
+  trendNote?: string;
+  status: VolumeValidationStatus;
+  fromCache: boolean;
+}
 
 /** 延迟函数，用于限流 */
 function sleep(ms: number): Promise<void> {
@@ -28,6 +46,10 @@ async function serpTrends(params: Record<string, string>): Promise<any> {
   if (!config.serpapiKey) {
     throw new Error('SERPAPI_KEY 未配置');
   }
+  if (!canSpendApi('serpapi', 1, config.serpapiMonthlyBudget, config.serpapiReserve)) {
+    const budget = getApiBudget('serpapi', config.serpapiMonthlyBudget, config.serpapiReserve);
+    throw new Error(`SERPAPI_BUDGET_EXHAUSTED：本月已用 ${budget.used}/${budget.monthlyBudget}，保留 ${budget.reserve}`);
+  }
 
   const qs = new URLSearchParams({
     engine: 'google_trends',
@@ -36,7 +58,9 @@ async function serpTrends(params: Record<string, string>): Promise<any> {
     ...params,
   });
 
-  return fetchJson<any>(`https://serpapi.com/search?${qs.toString()}`);
+  const data = await fetchJson<any>(`https://serpapi.com/search?${qs.toString()}`);
+  recordApiUsage('serpapi', params.data_type || 'unknown', 1, { keyword: params.q });
+  return data;
 }
 
 /**
@@ -173,12 +197,7 @@ export async function findTrendingKeywords(seeds: string[]): Promise<TrendingKey
  * 带 SQLite 缓存：同一词 14 天内不重复查（省 SerpAPI 免费额度）；
  * "查无数据/unknown" 也缓存——噪声词短期内同样查不到，避免反复烧额度。
  */
-export async function getVolumeAndTrend(keyword: string): Promise<{
-  volumeLevel: VolumeLevel;
-  volumeAvg?: number;
-  trendDirection: TrendDirection;
-  trendNote?: string;
-}> {
+export async function getVolumeAndTrend(keyword: string): Promise<VolumeValidationResult> {
   // 缓存命中：直接返回
   const cached = getVolumeCache(keyword);
   if (cached) {
@@ -187,6 +206,8 @@ export async function getVolumeAndTrend(keyword: string): Promise<{
       volumeAvg: cached.volume_avg ?? undefined,
       trendDirection: cached.trend_direction as TrendDirection,
       trendNote: cached.trend_note ?? undefined,
+      status: cached.volume_level === 'unknown' ? 'no-data' : 'success',
+      fromCache: true,
     };
   }
 
@@ -203,7 +224,7 @@ export async function getVolumeAndTrend(keyword: string): Promise<{
     if (timeline.length === 0) {
       // 查无数据：写入缓存（unknown），噪声词短期内同样查不到，避免反复烧额度
       setVolumeCache({ keyword, volume_level: 'unknown', trend_direction: 'unknown', trend_note: '无搜索数据' });
-      return { volumeLevel: 'unknown', trendDirection: 'unknown' };
+      return { volumeLevel: 'unknown', trendDirection: 'unknown', status: 'no-data', fromCache: false };
     }
 
     const values = timeline.map(d => {
@@ -263,9 +284,9 @@ export async function getVolumeAndTrend(keyword: string): Promise<{
       trend_note: trendNote,
     });
 
-    return { volumeLevel, volumeAvg: Math.round(volumeAvg), trendDirection, trendNote };
+    return { volumeLevel, volumeAvg: Math.round(volumeAvg), trendDirection, trendNote, status: 'success', fromCache: false };
   } catch {
     // 限流/网络错误：不缓存、不阻塞主流程（下次可重试）
-    return { volumeLevel: 'unknown', trendDirection: 'unknown' };
+    return { volumeLevel: 'unknown', trendDirection: 'unknown', status: 'failed', fromCache: false };
   }
 }

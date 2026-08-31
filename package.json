@@ -14,6 +14,9 @@
     "reject": "tsx src/index.ts reject",
     "status": "tsx src/index.ts status",
     "watch": "tsx src/index.ts --watch",
+    "review": "tsx src/index.ts review",
+    "games": "tsx src/index.ts games",
+    "test:workflow": "tsx --test test-workflow-state.ts",
     "build": "tsc"
   },
   "dependencies": {

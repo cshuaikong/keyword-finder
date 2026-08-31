@@ -5,10 +5,17 @@ import { dirname, resolve } from 'path';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+function nonNegativeInt(value: string | undefined, fallback: number): number {
+  const parsed = parseInt(value ?? String(fallback), 10);
+  return Number.isFinite(parsed) ? Math.max(0, parsed) : fallback;
+}
+
 dotenv.config({ path: resolve(__dirname, '../.env') });
 
 export interface Config {
   serpapiKey: string;
+  serpapiMonthlyBudget: number;
+  serpapiReserve: number;
   httpProxy: string;
   httpsProxy: string;
   cronSchedule: string;
@@ -24,8 +31,11 @@ export interface Config {
   radarVerifyBatch: number; // 雷达外环每轮验证词数
   radarInnerCron: string; // 雷达内环调度（默认每日 08:00）
   radarOuterCron: string; // 雷达外环调度（默认每周日 09:00）
+  reviewCron: string; // 到期观察任务调度（默认每日 10:00）
+  reviewBatch: number;
   suggestDelay: number; // Google Suggest 免费引擎请求间隔(ms)
   steamReleaseLimit: number; // Steam 新发售捕获：每轮最多处理几个新游戏（suggest 挖掘上限）
+  gameAnalysisBatch: number; // 游戏候选池每轮最多分析几款；发现入库不受此限制
   webuiPort: number; // Web 管理面板端口（默认 3000）
   disableSources: string[]; // 禁用的数据源列表（旧配置，向后兼容）
   disablePlugins: string[]; // 禁用插件列表（新配置，适用于所有插件类型）
@@ -34,6 +44,8 @@ export interface Config {
 
 export const config: Config = {
   serpapiKey: process.env.SERPAPI_KEY || '',
+  serpapiMonthlyBudget: nonNegativeInt(process.env.SERPAPI_MONTHLY_BUDGET, 100),
+  serpapiReserve: nonNegativeInt(process.env.SERPAPI_RESERVE, 15),
   httpProxy: process.env.HTTP_PROXY || '',
   httpsProxy: process.env.HTTPS_PROXY || '',
   cronSchedule: process.env.CRON_SCHEDULE || '0 8 * * *',
@@ -49,8 +61,11 @@ export const config: Config = {
   radarVerifyBatch: parseInt(process.env.RADAR_VERIFY_BATCH || '5', 10),
   radarInnerCron: process.env.RADAR_INNER_CRON || '0 8 * * *',
   radarOuterCron: process.env.RADAR_OUTER_CRON || '0 9 * * 0',
+  reviewCron: process.env.REVIEW_CRON || '0 10 * * *',
+  reviewBatch: nonNegativeInt(process.env.REVIEW_BATCH, 5),
   suggestDelay: parseInt(process.env.SUGGEST_DELAY || '150', 10),
   steamReleaseLimit: parseInt(process.env.STEAM_RELEASE_LIMIT || '5', 10),
+  gameAnalysisBatch: nonNegativeInt(process.env.GAME_ANALYSIS_BATCH, 5),
   webuiPort: parseInt(process.env.WEBUI_PORT || '3000', 10),
   disableSources: (process.env.DISABLE_SOURCES || '').split(',').map(s => s.trim()).filter(Boolean),
   // 插件禁用列表：如 DISABLE_PLUGINS=telegram,sitemap 可禁用任意类型的插件

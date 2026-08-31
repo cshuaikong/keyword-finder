@@ -141,14 +141,22 @@ export function recommendAction(params: {
   domainAvailable: boolean;
   competition: CompetitionInfo;
   brandRisk?: string;
+  confidenceScore: number;
 }): { action: 'register-now' | 'watch' | 'skip'; note: string } {
-  const { score, domainAvailable, competition, brandRisk } = params;
+  const { score, domainAvailable, competition, brandRisk, confidenceScore } = params;
 
   // 品牌词：不可注册域名，只能作为内容选题观察
   if (brandRisk) {
     return {
       action: 'watch',
       note: `⚠ 含品牌词「${brandRisk}」不可注册域名（商标风险），可作为教程/内容选题做内页`,
+    };
+  }
+
+  if (confidenceScore < 70) {
+    return {
+      action: 'watch',
+      note: `当前证据置信度仅 ${confidenceScore}%，等待补齐或重新验证后再决策`,
     };
   }
 
@@ -189,6 +197,7 @@ export function buildIntel(params: {
   score: number;
   domainAvailable: boolean;
   competition: CompetitionInfo;
+  confidenceScore: number;
 }): KeywordIntel {
   const assessment = assessKeyword(params.keyword);
   const brandRisk = detectBrandRisk(params.keyword);
@@ -197,6 +206,7 @@ export function buildIntel(params: {
     domainAvailable: params.domainAvailable,
     competition: params.competition,
     brandRisk,
+    confidenceScore: params.confidenceScore,
   });
 
   return {

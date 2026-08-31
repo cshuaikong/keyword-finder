@@ -12,10 +12,20 @@ export const domainAnalyzer: AnalyzerPlugin = {
   async analyze(keyword) {
     try {
       const result = await checkDomainAvailability(keyword.keyword);
-      return { domain: result };
-    } catch {
+      const noData = result.available.length === 0 && result.taken.length === 0 && result.uncertain.length === 0;
+      return {
+        domain: result,
+        evidence: [{
+          dimension: 'domain',
+          status: noData ? 'no-data' : result.uncertain.length > 0 ? 'fallback' : 'success',
+          confidence: noData ? 10 : result.confidence,
+          checkedAt: new Date(),
+          result,
+        }],
+      };
+    } catch (err: any) {
       // 分析器约定：永不抛异常，失败返回空对象由 pipeline 兜底
-      return {};
+      return { evidence: [{ dimension: 'domain', status: 'failed', confidence: 0, checkedAt: new Date(), error: err?.message || String(err) }] };
     }
   },
 };

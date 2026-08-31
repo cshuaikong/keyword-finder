@@ -87,7 +87,7 @@
 </head>
 <body>
 <h1>📡 keyword-finder 管理面板</h1>
-<div class="sub">词库 / 需求库 / 淘汰池 / 运行记录 · 数据实时来自 SQLite</div>
+<div class="sub">游戏候选池 / 关键词 / 需求库 / 运行记录 · 数据实时来自 SQLite</div>
 
 <div class="cards" id="stats">
   <div class="card"><div class="num" id="st-total">–</div><div class="label">词库总数</div></div>
@@ -96,13 +96,41 @@
   <div class="card"><div class="num" id="st-watch">–</div><div class="label">👀 观察</div></div>
   <div class="card red"><div class="num" id="st-skip">–</div><div class="label">⛔ 放弃</div></div>
   <div class="card purple"><div class="num" id="st-req">–</div><div class="label">需求库</div></div>
+  <div class="card"><div class="num" id="st-budget">–</div><div class="label">SerpAPI 可用</div></div>
+  <div class="card yellow"><div class="num" id="st-reviews">–</div><div class="label">到期复查</div></div>
+  <div class="card green"><div class="num" id="st-games">–</div><div class="label">游戏候选</div></div>
+  <div class="card yellow"><div class="num" id="st-games-pending">–</div><div class="label">游戏待分析</div></div>
 </div>
 
 <div class="tabs">
   <div class="tab active" data-view="words" onclick="switchView('words')">📚 词库</div>
+  <div class="tab" data-view="games" onclick="switchView('games')">🎮 游戏机会</div>
   <div class="tab" data-view="requirements" onclick="switchView('requirements')">📋 需求库</div>
   <div class="tab" data-view="rejects" onclick="switchView('rejects')">⛔ 淘汰池</div>
   <div class="tab" data-view="runs" onclick="switchView('runs')">⏱ 运行记录</div>
+  <div class="tab" data-view="reviews" onclick="switchView('reviews')">🔁 观察任务</div>
+</div>
+
+<!-- 游戏候选池 -->
+<div class="view" id="view-games">
+  <div class="toolbar">
+    <select id="g-status"><option value="">状态：全部</option><option value="pending">待分析</option><option value="retry">重试</option><option value="processed">已分析</option><option value="rejected">已停止</option></select>
+    <button onclick="loadGames()">🔍 检索</button>
+    <button class="gray" onclick="loadGames()">🔄 刷新</button>
+  </div>
+  <table>
+    <thead><tr><th>游戏</th><th>生命周期</th><th>队列</th><th>机会</th><th>需求</th><th>增长</th><th>内容</th><th>可进入度</th><th>窗口</th><th>置信度</th><th>关键词</th><th>发布日</th><th>主要对手</th></tr></thead>
+    <tbody id="games-body"></tbody>
+  </table>
+</div>
+
+<!-- 观察任务 -->
+<div class="view" id="view-reviews">
+  <div class="toolbar"><button class="gray" onclick="loadReviews()">🔄 刷新</button></div>
+  <table>
+    <thead><tr><th>关键词</th><th>类型</th><th>原因</th><th>状态</th><th>下次复查</th><th>尝试</th><th>置信度</th></tr></thead>
+    <tbody id="reviews-body"></tbody>
+  </table>
 </div>
 
 <!-- 词库 -->
@@ -112,14 +140,14 @@
     <select id="f-volume"><option value="">量级：全部</option><option value="unknown">unknown</option><option value="A">A</option><option value="B">B</option><option value="C">C</option><option value="D">D</option></select>
     <select id="f-source"><option value="">来源：全部</option><option value="trends:breakout">trends:breakout</option><option value="trends">trends</option><option value="suggest">suggest</option></select>
     <select id="f-action"><option value="">行动：全部</option><option value="watch">观察</option><option value="register-now">立即注册</option><option value="skip">放弃</option></select>
-    <select id="f-sort"><option value="recent">排序：最近</option><option value="seen">出现次数</option><option value="score">评分</option></select>
+    <select id="f-sort"><option value="recent">排序：最近</option><option value="priority">证据优先级</option><option value="seen">出现次数</option><option value="score">评分</option></select>
     <button onclick="loadWords(0)">🔍 检索</button>
     <button class="gray" onclick="resetFilters()">重置</button>
     <button class="gray" onclick="loadWords(offset)">🔄 刷新</button>
   </div>
   <table>
     <thead><tr>
-      <th>关键词</th><th>量级</th><th>趋势</th><th>来源</th><th>出现</th><th>评分</th><th>行动</th><th>最近时间</th><th>操作</th>
+      <th>关键词</th><th>量级</th><th>趋势</th><th>来源</th><th>信号</th><th>优先级</th><th>置信度</th><th>出现</th><th>评分</th><th>行动</th><th>验证时间</th><th>最近时间</th><th>操作</th>
     </tr></thead>
     <tbody id="words-body"></tbody>
   </table>
@@ -158,7 +186,7 @@
     <button class="gray" onclick="loadRuns()">🔄 刷新</button>
   </div>
   <table>
-    <thead><tr><th>时间</th><th>分类</th><th>候选</th><th>验证</th><th>耗时</th></tr></thead>
+    <thead><tr><th>时间</th><th>状态</th><th>分类</th><th>候选</th><th>验证</th><th>耗时</th></tr></thead>
     <tbody id="runs-body"></tbody>
   </table>
 </div>
@@ -198,6 +226,8 @@ function switchView(name) {
   if (name === 'requirements') loadRequirements();
   if (name === 'rejects') loadRejects();
   if (name === 'runs') loadRuns();
+  if (name === 'reviews') loadReviews();
+  if (name === 'games') loadGames();
 }
 
 async function loadStats() {
@@ -209,10 +239,39 @@ async function loadStats() {
     $('st-watch').textContent = s.watch;
     $('st-skip').textContent = s.skip;
     $('st-req').textContent = await api('/api/requirements').then(r => r.length);
+    $('st-budget').textContent = s.serpapiBudget?.spendableRemaining ?? '–';
+    $('st-reviews').textContent = s.reviews?.due ?? 0;
+    $('st-games').textContent = s.games?.total ?? 0;
+    $('st-games-pending').textContent = (s.games?.pending ?? 0) + (s.games?.retry ?? 0);
   } catch (e) { toast('统计加载失败: ' + e.message, false); }
 }
 
 function volumeTag(v) { return `<span class="tag ${esc(v)}">${esc(v)}</span>`; }
+
+async function loadGames() {
+  try {
+    const status = $('g-status').value;
+    const list = await api('/api/games?limit=200' + (status ? '&status=' + encodeURIComponent(status) : ''));
+    const body = $('games-body');
+    if (!list.length) {
+      body.innerHTML = '<tr><td colspan="13" class="empty">游戏候选池为空，请运行 npm run games</td></tr>';
+      return;
+    }
+    body.innerHTML = list.map(g => {
+      let meta = {};
+      try { meta = g.metadata ? JSON.parse(g.metadata) : {}; } catch {}
+      const competitors = (meta.competitors || []).slice(0, 3).join(', ') || (g.processing_status === 'processed' ? '未验证' : '待分析');
+      return `<tr>
+        <td class="kw"><a href="${esc(g.source_url || '#')}" target="_blank" rel="noopener">${esc(g.title)}</a></td>
+        <td>${esc(g.lifecycle_status)}</td><td>${esc(g.processing_status)}</td>
+        <td><strong>${g.opportunity_score}</strong></td><td>${g.demand_score}</td><td>${g.momentum_score}</td>
+        <td>${g.content_score}</td><td>${g.competition_score}</td><td>${g.lifecycle_score}</td>
+        <td>${g.confidence_score}%</td><td>${g.keyword_count || 0}</td><td>${esc(g.release_date || '待定')}</td>
+        <td title="${esc((meta.competitors || []).join(', '))}">${esc(competitors)}</td>
+      </tr>`;
+    }).join('');
+  } catch (e) { toast('游戏候选加载失败: ' + e.message, false); }
+}
 
 function sourceTag(s) {
   if (s === 'trends:breakout') return '<span class="tag breakout">BREAKOUT</span>';
@@ -251,21 +310,26 @@ async function loadWords(pageOffset) {
     const r = await api('/api/words?' + q);
     const body = $('words-body');
     if (r.items.length === 0) {
-      body.innerHTML = '<tr><td colspan="9" class="empty">没有匹配的词</td></tr>';
+      body.innerHTML = '<tr><td colspan="13" class="empty">没有匹配的词</td></tr>';
     } else {
       body.innerHTML = r.items.map(w => `<tr>
         <td class="kw" title="${esc(w.chinese_meaning || '')}">${esc(w.keyword)}</td>
         <td>${volumeTag(w.volume_level)}</td>
         <td>${esc(w.trend_direction)}</td>
         <td>${sourceTag(w.source)}</td>
+        <td>${w.source_count || 0}源/${w.recent_signal_count || 0}次</td>
+        <td>${w.priority_score || 0}</td>
+        <td><span class="tag ${w.confidence_level === 'high' ? 'up' : w.confidence_level === 'medium' ? 'unknown' : 'down'}">${w.confidence_score || 0}%</span></td>
         <td>${w.seen_count}次</td>
         <td>${w.score}</td>
         <td>${actionTag(w.action)}</td>
+        <td>${fmtTime(w.validated_at)}</td>
         <td>${fmtTime(w.last_seen_at)}</td>
         <td style="white-space:nowrap">
           <button class="mini green" onclick="acceptWord('${esc(w.keyword)}')">✅通过</button>
           <button class="mini red" onclick="rejectWord('${esc(w.keyword)}')">⛔淘汰</button>
           <button class="mini gray" onclick="delWord('${esc(w.keyword)}')">🗑删除</button>
+          <button class="mini gray" onclick="showEvidence('${esc(w.keyword)}')">🔎证据</button>
         </td>
       </tr>`).join('');
     }
@@ -273,6 +337,19 @@ async function loadWords(pageOffset) {
     const pages = Math.max(1, Math.ceil(r.total / 50));
     $('words-pager').textContent = `共 ${r.total} 词 · 第 ${page}/${pages} 页`;
   } catch (e) { toast('词库加载失败: ' + e.message, false); }
+}
+
+async function showEvidence(kw) {
+  try {
+    const rows = await api('/api/validations?keyword=' + encodeURIComponent(kw));
+    if (!rows.length) return alert(`「${kw}」暂无验证历史`);
+    const text = rows.slice(0, 20).map(v => {
+      const cache = v.from_cache ? ' · 缓存' : '';
+      const error = v.error ? ` · ${v.error}` : '';
+      return `${fmtTime(v.checked_at)} · ${v.dimension} · ${v.status} · ${v.confidence}%${cache}${error}`;
+    }).join('\n');
+    alert(`「${kw}」验证历史\n\n${text}`);
+  } catch (e) { toast('验证历史加载失败: ' + e.message, false); }
 }
 
 function resetFilters() {
@@ -380,10 +457,11 @@ async function loadRuns() {
     const list = await api('/api/runs');
     const body = $('runs-body');
     if (list.length === 0) {
-      body.innerHTML = '<tr><td colspan="5" class="empty">暂无运行记录</td></tr>';
+      body.innerHTML = '<tr><td colspan="6" class="empty">暂无运行记录</td></tr>';
     } else {
       body.innerHTML = list.map(r => `<tr>
         <td>${fmtTime(r.run_at)}</td>
+        <td><span class="tag ${r.status === 'succeeded' ? 'up' : r.status === 'failed' ? 'down' : 'unknown'}">${esc(r.status || 'succeeded')}</span></td>
         <td>${esc(r.category)}</td>
         <td>${r.candidates_count}</td>
         <td>${r.validated_count}</td>
@@ -391,6 +469,22 @@ async function loadRuns() {
       </tr>`).join('');
     }
   } catch (e) { toast('运行记录加载失败: ' + e.message, false); }
+}
+
+async function loadReviews() {
+  try {
+    const list = await api('/api/reviews');
+    const body = $('reviews-body');
+    if (!list.length) {
+      body.innerHTML = '<tr><td colspan="7" class="empty">暂无观察任务</td></tr>';
+      return;
+    }
+    body.innerHTML = list.map(r => `<tr>
+      <td class="kw">${esc(r.keyword)}</td><td>${esc(r.task_type)}</td><td>${esc(r.reason)}</td>
+      <td>${esc(r.status)}</td><td>${fmtTime(r.next_check_at)}</td>
+      <td>${r.attempts}/${r.max_attempts}</td><td>${r.confidence_score || 0}%</td>
+    </tr>`).join('');
+  } catch (e) { toast('观察任务加载失败: ' + e.message, false); }
 }
 
 // 启动：加载统计 + 词库第一页，之后每 60 秒自动刷新统计

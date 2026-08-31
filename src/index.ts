@@ -38,8 +38,14 @@ import {
   updateRequirementStatus,
   countUnverifiedWords,
   querySteamGames,
+  getApiBudget,
+  scheduledReviewStats,
+  queryGames,
+  gameStats,
 } from './core/db.js';
 import { runInnerLoop, runOuterLoop } from './modules/radar.js';
+import { runGameRadar } from './modules/game-radar.js';
+import { runScheduledReviews } from './modules/reviews.js';
 import { startWebUi } from './modules/webui.js';
 import { builtinPlugins } from './plugins/index.js';
 
@@ -65,6 +71,10 @@ function printWordLibrary(): void {
 
   const stats = wordsStats();
   console.log(`  总计: ${stats.total} 个词 | 🚀立即注册: ${stats.registerNow} | 👀观察: ${stats.watch} | ⛔放弃: ${stats.skip}`);
+  const budget = getApiBudget('serpapi', config.serpapiMonthlyBudget, config.serpapiReserve);
+  console.log(`  SerpAPI: 已用 ${budget.used}/${budget.monthlyBudget} | 可自动使用 ${budget.spendableRemaining} | 保留 ${budget.reserve}`);
+  const reviews = scheduledReviewStats();
+  console.log(`  观察任务: 活跃 ${reviews.active} | 已到期 ${reviews.due} | 已耗尽 ${reviews.exhausted}`);
   console.log('');
 
   // Top 20 高分词
@@ -72,11 +82,11 @@ function printWordLibrary(): void {
   if (words.length > 0) {
     console.log(chalk.green('  🏆 高分词 Top 20:'));
     console.log('');
-    console.log('  | 关键词 | 评分 | 量级 | 竞争 | 行动 | 出现次数 | 中文 |');
-    console.log('  |--------|------|------|------|------|----------|------|');
+    console.log('  | 关键词 | 评分 | 置信度 | 量级 | 竞争 | 行动 | 出现次数 | 中文 |');
+    console.log('  |--------|------|--------|------|------|------|----------|------|');
     words.forEach(w => {
       const action = w.action === 'register-now' ? '🚀' : w.action === 'watch' ? '👀' : '⛔';
-      console.log(`  | ${w.keyword} | ${w.score} | ${w.volume_level} | ${w.competition} | ${action} | ${w.seen_count}次 | ${w.chinese_meaning || '—'} |`);
+      console.log(`  | ${w.keyword} | ${w.score} | ${w.confidence_score}% | ${w.volume_level} | ${w.competition} | ${action} | ${w.seen_count}次 | ${w.chinese_meaning || '—'} |`);
     });
     console.log('');
   }
@@ -118,13 +128,16 @@ function printWordLibrary(): void {
     console.log('');
   }
 
-  // Steam 新发售捕获（P0：自动发现新游戏名的落地清单）
-  const steamGames = querySteamGames(15);
-  if (steamGames.length > 0) {
-    console.log(chalk.green('  🎮 Steam 新发售捕获:'));
+  // 游戏候选池：生命周期、处理队列与机会分
+  const games = queryGames(15);
+  if (games.length > 0) {
+    const gs = gameStats();
+    console.log(chalk.green(`  🎮 游戏候选池（总计 ${gs.total} / 待分析 ${gs.pending + gs.retry} / 推荐 ${gs.recommended}）:`));
     console.log('');
-    steamGames.forEach(g => {
-      console.log(`     [${g.appid}] ${g.title}  (${fmtLocalTime(g.first_seen_at)})`);
+    console.log('  | 游戏 | 阶段 | 队列 | 机会 | 置信度 | 关键词 | 发布日 |');
+    console.log('  |------|------|------|------|--------|--------|--------|');
+    games.forEach(g => {
+      console.log(`  | ${g.title} | ${g.lifecycle_status} | ${g.processing_status} | ${g.opportunity_score} | ${g.confidence_score}% | ${g.keyword_count || 0} | ${g.release_date || '待定'} |`);
     });
     console.log('');
   }
@@ -135,7 +148,7 @@ function printWordLibrary(): void {
     console.log(chalk.gray('  ⏱ 最近运行:'));
     console.log('');
     runs.forEach(r => {
-      console.log(`     ${r.run_at} | 分类:${r.category} | 候选:${r.candidates_count} | 验证:${r.validated_count} | 耗时:${(r.duration_ms / 1000).toFixed(0)}s`);
+      console.log(`     ${r.run_at} | ${r.status} | 分类:${r.category} | 候选:${r.candidates_count} | 验证:${r.validated_count} | 耗时:${(r.duration_ms / 1000).toFixed(0)}s`);
     });
     console.log('');
   }
@@ -222,6 +235,7 @@ async function main() {
         console.log(chalk.cyan('🛰 雷达常驻模式启动'));
         console.log(chalk.gray(`   内环(找词): 每日 ${config.radarInnerCron}`));
         console.log(chalk.gray(`   外环(验证): 每周 ${config.radarOuterCron}`));
+        console.log(chalk.gray(`   观察复查: ${config.reviewCron}`));
         console.log(chalk.gray('   按 Ctrl+C 停止\n'));
 
         // 管理面板随雷达常驻模式自动带起
@@ -231,13 +245,40 @@ async function main() {
         if (runBoth || options.innerOnly) await runInnerLoop();
         if (runBoth || options.outerOnly) await runOuterLoop();
 
+        let innerRunning = false;
+        let outerRunning = false;
+        let reviewRunning = false;
         cron.schedule(config.radarInnerCron, () => {
+          if (innerRunning) {
+            console.log(chalk.yellow('⚠ 上一轮内环仍在运行，本次调度跳过'));
+            return;
+          }
+          innerRunning = true;
           console.log(chalk.cyan(`\n⏰ [${new Date().toLocaleString()}] 内环触发`));
-          runInnerLoop().catch(err => console.log(chalk.red('内环出错:'), err));
+          runInnerLoop()
+            .catch(err => console.log(chalk.red('内环出错:'), err))
+            .finally(() => { innerRunning = false; });
         });
         cron.schedule(config.radarOuterCron, () => {
+          if (outerRunning) {
+            console.log(chalk.yellow('⚠ 上一轮外环仍在运行，本次调度跳过'));
+            return;
+          }
+          outerRunning = true;
           console.log(chalk.cyan(`\n⏰ [${new Date().toLocaleString()}] 外环触发`));
-          runOuterLoop().catch(err => console.log(chalk.red('外环出错:'), err));
+          runOuterLoop()
+            .catch(err => console.log(chalk.red('外环出错:'), err))
+            .finally(() => { outerRunning = false; });
+        });
+        cron.schedule(config.reviewCron, () => {
+          if (reviewRunning) {
+            console.log(chalk.yellow('⚠ 上一轮观察复查仍在运行，本次调度跳过'));
+            return;
+          }
+          reviewRunning = true;
+          runScheduledReviews()
+            .catch(err => console.log(chalk.red('观察复查出错:'), err))
+            .finally(() => { reviewRunning = false; });
         });
 
         // 常驻不退出（cron 由 node-cron 内部定时器驱动）
@@ -252,6 +293,28 @@ async function main() {
       // 状态摘要
       const pending = countUnverifiedWords();
       console.log(chalk.gray(`\n📋 未验证词队列: 还剩 ${pending} 个待外环处理`));
+    });
+
+  program
+    .command('review')
+    .description('执行到期观察任务（置信度不足/失败/待观察关键词）')
+    .option('-l, --limit <count>', '本轮最多处理数量', String(config.reviewBatch))
+    .action(async (options: { limit?: string }) => {
+      const parsed = parseInt(options.limit || String(config.reviewBatch), 10);
+      const limit = Number.isFinite(parsed) ? Math.max(0, parsed) : config.reviewBatch;
+      await runScheduledReviews(limit);
+    });
+
+  program
+    .command('games')
+    .description('运行游戏优先雷达：发现游戏、入持久化队列、初筛建站机会并扩词')
+    .option('-l, --limit <count>', '本轮最多分析几款（发现入库不受限制）', String(config.gameAnalysisBatch))
+    .action(async (options: { limit?: string }) => {
+      const parsed = parseInt(options.limit || String(config.gameAnalysisBatch), 10);
+      const limit = Number.isFinite(parsed) ? Math.max(0, parsed) : config.gameAnalysisBatch;
+      await runGameRadar(limit);
+      const stats = gameStats();
+      console.log(chalk.gray(`\n📋 游戏池: ${stats.total} | 待分析 ${stats.pending + stats.retry} | 已完成 ${stats.processed} | 推荐 ${stats.recommended}`));
     });
 
   // Web 管理面板（独立启动，或随 watch 模式自动带起）
@@ -286,6 +349,7 @@ async function main() {
     // 定时模式
     if (opts.watch) {
       console.log(chalk.cyan(`⏰ 定时模式启动，每天 ${config.cronSchedule} 自动运行`));
+      console.log(chalk.gray(`   观察复查: ${config.reviewCron}`));
       console.log(chalk.gray('   按 Ctrl+C 停止\n'));
 
       // 管理面板随常驻模式自动带起
@@ -295,9 +359,29 @@ async function main() {
       await executeAndReport(category);
 
       // 设置定时任务
+      let scheduledRunActive = false;
+      let scheduledReviewActive = false;
       cron.schedule(config.cronSchedule, async () => {
+        if (scheduledRunActive) {
+          console.log(chalk.yellow('⚠ 上一轮找词任务仍在运行，本次调度跳过'));
+          return;
+        }
+        scheduledRunActive = true;
         console.log(chalk.cyan(`\n⏰ [${new Date().toLocaleString()}] 定时任务触发\n`));
-        await executeAndReport(category);
+        try {
+          await executeAndReport(category);
+        } catch (err) {
+          console.log(chalk.red('定时找词出错:'), err);
+        } finally {
+          scheduledRunActive = false;
+        }
+      });
+      cron.schedule(config.reviewCron, () => {
+        if (scheduledReviewActive) return;
+        scheduledReviewActive = true;
+        runScheduledReviews()
+          .catch(err => console.log(chalk.red('观察复查出错:'), err))
+          .finally(() => { scheduledReviewActive = false; });
       });
 
       return;

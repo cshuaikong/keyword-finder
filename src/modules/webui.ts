@@ -17,6 +17,7 @@
  *   - GET  /api/rejects          淘汰池
  *   - POST /api/rejects/delete   删除淘汰记录
  *   - GET  /api/runs             运行记录
+ *   - GET  /api/games            游戏候选、生命周期和机会评分
  *
  * 安全：默认只监听 127.0.0.1（本机访问），端口可配 WEBUI_PORT
  */
@@ -39,6 +40,12 @@ import {
   queryRuns,
   wordsStats,
   countUnverifiedWords,
+  getApiBudget,
+  queryValidationHistory,
+  queryScheduledReviews,
+  scheduledReviewStats,
+  queryGames,
+  gameStats,
 } from '../core/db.js';
 import chalk from 'chalk';
 
@@ -108,7 +115,13 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     // ── 统计 ──
     if (method === 'GET' && url === '/api/stats') {
       const stats = wordsStats();
-      reply(res, { ...stats, unverified: countUnverifiedWords() });
+      reply(res, {
+        ...stats,
+        unverified: countUnverifiedWords(),
+        serpapiBudget: getApiBudget('serpapi', config.serpapiMonthlyBudget, config.serpapiReserve),
+        reviews: scheduledReviewStats(),
+        games: gameStats(),
+      });
       return;
     }
 
@@ -120,11 +133,32 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
         source: q.source || undefined,
         volumeLevel: q.volume || undefined,
         action: q.action || undefined,
-        sort: (q.sort as 'recent' | 'seen' | 'score') || 'recent',
+        sort: (q.sort as 'priority' | 'recent' | 'seen' | 'score') || 'recent',
         limit: q.limit ? parseInt(q.limit, 10) : 50,
         offset: q.offset ? parseInt(q.offset, 10) : 0,
       });
       reply(res, result);
+      return;
+    }
+    if (method === 'GET' && url === '/api/validations') {
+      const q = parseQuery(req.url || '');
+      if (!q.keyword) {
+        sendJson(res, 400, { error: '缺少 keyword 参数' });
+        return;
+      }
+      reply(res, queryValidationHistory(q.keyword, 50));
+      return;
+    }
+    if (method === 'GET' && url === '/api/reviews') {
+      reply(res, queryScheduledReviews(200));
+      return;
+    }
+    if (method === 'GET' && url === '/api/games') {
+      const q = parseQuery(req.url || '');
+      const limit = q.limit ? Math.max(0, parseInt(q.limit, 10)) : 100;
+      const allowedStatuses = ['pending', 'analyzing', 'processed', 'retry', 'rejected'] as const;
+      const status = allowedStatuses.find(item => item === q.status);
+      reply(res, queryGames(limit, status));
       return;
     }
 

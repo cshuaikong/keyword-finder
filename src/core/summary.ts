@@ -24,7 +24,7 @@ export function printSummary(result: FindResult): void {
   console.log('');
 
   // Top 5 推荐（只推通过量级门槛的词）
-  const recommendable = result.validated.filter(k => k.score >= RECOMMEND_MIN_SCORE);
+  const recommendable = result.validated.filter(k => k.score >= RECOMMEND_MIN_SCORE && k.confidenceScore >= 70);
   const top5 = recommendable.slice(0, 5);
   if (top5.length > 0) {
     console.log(chalk.green('  🏆 Top 5 推荐词:'));
@@ -35,7 +35,7 @@ export function printSummary(result: FindResult): void {
       const zh = kw.intel.chineseMeaning ? ` | ${kw.intel.chineseMeaning}` : '';
       const vol = kw.intel.volumeLevel === 'unknown' ? '量级:?' : `量级:${kw.intel.volumeLevel}`;
       const trendDir = kw.intel.trendDirection === 'up' ? '📈上升' : kw.intel.trendDirection === 'new' ? '✨新词' : kw.intel.trendDirection === 'stable' ? '➡️平稳' : kw.intel.trendDirection === 'down' ? '📉下降' : '趋势:?';
-      console.log(`  ${i + 1}. ${chalk.bold(kw.keyword)}${kw.intel.brandRisk ? chalk.yellow(' ⚠品牌') : ''} (评分: ${kw.score})${zh}`);
+      console.log(`  ${i + 1}. ${chalk.bold(kw.keyword)}${kw.intel.brandRisk ? chalk.yellow(' ⚠品牌') : ''} (评分: ${kw.score}，置信度: ${kw.confidenceScore}%)${zh}`);
       console.log(`     ${trend} | 竞争: ${kw.competition.difficulty} | ${vol} | ${trendDir} | 难度:${kw.intel.devDifficulty} | ${domain}`);
     });
     console.log('');
@@ -45,7 +45,7 @@ export function printSummary(result: FindResult): void {
   }
 
   // 域名可注册的词（排除品牌词 + 通过量级门槛）
-  const availableOnes = result.validated.filter(k => k.domainAvailable && !k.intel.brandRisk && k.score >= RECOMMEND_MIN_SCORE);
+  const availableOnes = result.validated.filter(k => k.domainAvailable && !k.intel.brandRisk && k.score >= RECOMMEND_MIN_SCORE && k.confidenceScore >= 70);
   if (availableOnes.length > 0) {
     console.log(chalk.green(`  ✅ 域名可注册的词: ${availableOnes.length} 个`));
     availableOnes.slice(0, 5).forEach(kw => {
@@ -55,7 +55,7 @@ export function printSummary(result: FindResult): void {
   }
 
   // 低竞争的蓝海词（排除品牌词 + 通过量级门槛）
-  const blueOcean = result.validated.filter(k => k.competition.difficulty === 'low' && !k.intel.brandRisk && k.score >= RECOMMEND_MIN_SCORE);
+  const blueOcean = result.validated.filter(k => k.competition.difficulty === 'low' && !k.intel.brandRisk && k.score >= RECOMMEND_MIN_SCORE && k.confidenceScore >= 70);
   if (blueOcean.length > 0) {
     console.log(chalk.green(`  🌊 蓝海词（低竞争）: ${blueOcean.length} 个`));
     blueOcean.slice(0, 5).forEach(kw => {

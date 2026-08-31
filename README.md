@@ -41,7 +41,7 @@ src/
 │   ├── pipeline.ts       # 流程编排：词根→抓取→提取→分析→评分→输出
 │   ├── cluster.ts        # 关键词聚类（主题簇）
 │   ├── summary.ts        # 控制台摘要输出
-│   └── db.ts             # SQLite 四表（words/requirements/rejects/runs）
+│   └── db.ts             # SQLite 状态机、运行/阶段记录与业务数据
 ├── plugins/              # 插件层（业务逻辑所在）
 │   ├── sources/          # 数据源插件（5 个）
 │   ├── extractors/       # 提取器插件（n-gram）
@@ -66,9 +66,17 @@ src/
 5. **规则评估** - 自动判断开发难度、变现潜力、建议站型，给出「立即注册/观察/放弃」行动建议
 6. **品牌风险检测** - 60+ 商标词库（词边界匹配），品牌词自动标记 ⚠ 并从可注册列表剔除
 7. **关键词簇** - 同主题词自动分组，一眼看出哪些词可以做一个站同时覆盖
-8. **SQLite 词库** - 每次运行结果自动入库（新词库/淘汰池/运行记录），重复出现的词累计出现次数
+8. **SQLite 状态机** - 关键词只有一个当前状态；需求库和淘汰池保存决策详情，重复出现累计信号
 9. **Markdown 报告** - 时间戳命名，每次运行独立文件
 10. **Telegram 推送 + 定时模式** - 每日快报推送到手机，cron 自动运行
+11. **发现证据历史** - `signals` 保存来源、词根、强度和时间，不再只保留关键词最新快照
+12. **预算调度** - `api_usage` 记录 SerpAPI 调用，按月度预算和保留额度硬限流
+13. **验证历史与置信度** - `validations` 保存每个维度的成功、无数据、失败、降级和缓存结果
+14. **自动观察复查** - `scheduled_reviews` 按原因创建复查任务，支持原子领取、退避和预算延后
+15. **游戏候选池** - `games` 先保存游戏实体、发布时间和生命周期，再决定是否扩词
+16. **不丢词队列** - Steam 全量发现结果先入库，批次上限只限制分析消费
+17. **发售前发现** - 同时扫描 Steam Upcoming、Popular Upcoming 和 New Releases
+18. **建站机会卡** - 分别输出需求、增长、内容空间、竞争可进入度、窗口和置信度
 
 ## 快速开始
 
@@ -120,6 +128,12 @@ npm run find
 # 只找游戏类词
 npm run find:game
 
+# 游戏优先雷达：发现游戏 → 机会初筛 → SERP 对手分析 → 攻略需求扩词
+npm run games
+
+# 所有发现都会入库，本轮只分析 10 款
+npm run games -- --limit 10
+
 # 只找 AI 工具类词
 npm run find:ai
 
@@ -131,7 +145,31 @@ npm run watch
 
 # 查看词库（新词库 + 需求库 + 淘汰池 + 运行记录）
 npm run list
+
+# 手动执行到期观察任务
+npm run review
+
+# 最多处理 10 个到期任务
+npm run review -- --limit 10
 ```
+
+## 游戏优先流程
+
+游戏站机会不再从通用词根碰运气，而是按以下顺序处理：
+
+```text
+Steam Upcoming / Popular Upcoming / New Releases
+  → games 候选池（完整入库）
+  → pending/retry 持久化队列
+  → Google Suggest 真实需求
+  → 主词/guide/wiki 三组 SERP 对手分析
+  → 机会评分和快照
+  → 高价值长尾进入 words 验证队列
+```
+
+生命周期包括 `upcoming`、`prelaunch`、`launched` 等状态；发售前 14 天和发售后首周优先级最高。已分析游戏会按生命周期在 1 天或 7 天后重新进入分析队列，`game_snapshots` 会保留每次评分，为后续计算 1/3/7 天速度和结果回测提供数据。
+
+管理面板的“🎮 游戏机会”页展示各维度评分、关键词数量和主要 SERP 对手。竞争数据查询失败时保持中性分，不会把未知误判为蓝海。
 
 ## 人工筛选（新词库 → 需求库）
 
@@ -142,7 +180,7 @@ npm run list
 # ✅ 通过筛选：把词移入需求库，附主题分类和入选理由
 npm run accept -- "coding agent" -t "AI 工具" -n "编码代理需求真实，竞争低"
 
-# ⛔ 淘汰：记入淘汰池（附理由），从新词库移除
+# ⛔ 淘汰：记入淘汰池并切换为 rejected 状态
 npm run reject -- "agent that grows" -r "意图抽象，非搜索词"
 
 # 📋 更新建站进度: planned | developing | launched | abandoned
@@ -158,7 +196,82 @@ npm run list
 2. `npm run list` 查看新词，人工四问筛选
 3. `accept` 通过 → 需求库（记主题/理由）→ 开始建站
 4. `status` 跟踪建站进度：规划中 → 开发中 → 已上线 / 已放弃
-5. `reject` 淘汰 → 淘汰池留档（再次被发现时会重新评估，淘汰不是永久的）
+5. `reject` 淘汰 → 淘汰池留档；删除淘汰记录后才会重新进入审核或恢复归档状态
+
+关键词状态由 `words.workflow_status` 唯一表示：
+
+```text
+discovered → review → accepted → building → launched
+                 ├─→ rejected
+                 └─→ retry_wait
+accepted/building/launched → archived
+```
+
+已进入需求库且尚未归档的词不能直接淘汰，避免同一个词同时处于开发和淘汰状态。
+
+## 运行可靠性
+
+- 每次任务启动即创建 `running` 记录，空结果也会保存
+- 最终状态区分 `succeeded`、`partial` 和 `failed`
+- `run_steps` 单独记录数据源、分析器、SQLite、报告和 Telegram 的执行结果
+- SQLite 核心存储优先；报告或通知失败不会阻止其他输出
+- 定时任务带防重入锁，上一轮未结束时跳过重复调度
+- 外环验证区分成功、无数据、失败和缓存命中；失败词进入 `retry_wait`
+
+## 证据优先级与 API 预算
+
+外环不再单纯按出现次数排队。最近 30 天内的跨源数量、信号次数、最强来源、发现新鲜度和累计出现次数会共同形成 `priority_score`。管理面板可以切换到“证据优先级”排序，并显示最近信号数和来源数。
+
+SerpAPI 普通自动任务只会使用 `SERPAPI_MONTHLY_BUDGET - SERPAPI_RESERVE` 的额度：
+
+```env
+SERPAPI_MONTHLY_BUDGET=100
+SERPAPI_RESERVE=15
+```
+
+所有实际调用写入 `api_usage`；缓存命中不记额度。达到自动使用上限后，Trends 会降级，外环会暂停付费验证，但 Suggest、Steam 等免费发现流程仍会继续。
+
+## 验证历史与置信度
+
+每次验证都会追加到 `validations`，不会覆盖旧结果。综合置信度使用固定权重：
+
+| 维度 | 权重 |
+|---|---:|
+| 搜索量与趋势 | 40% |
+| SERP 竞争 | 25% |
+| 域名状态 | 25% |
+| 翻译 | 10% |
+
+缺失维度按 0 计算，因此单个成功结果不会被归一化成 100%。缓存、无数据、本地词典降级和请求失败具有不同可信度。最近一次验证失败时，会保留仍在有效期内的上次成功结果作为参考，但综合置信度最高限制为 69%，不会触发“立即注册”。
+
+管理面板会显示置信度和最后验证时间；点击“🔎证据”可查看各维度历史。无法确认的域名会标记为 `uncertain`，不再被当成可注册域名。
+
+## 自动观察复查
+
+以下情况会自动创建观察任务：
+
+- 验证服务失败：1 天后复查
+- 搜索量暂无数据：7 天后复查
+- 只有量级、缺少完整验证：3 天后复查
+- 置信度不足：3 天后复查
+- 高置信度但条件尚未成熟：7 天后复查
+
+未解决任务按 1/3/7/14 天逐步退避，默认最多尝试 4 次，之后标记为 `exhausted`，避免无限消耗额度。SerpAPI 自动预算不足时任务只会延后，不消耗尝试次数。
+
+任务领取使用数据库状态 `active → running`，多个常驻进程不会正常领取同一个任务；崩溃遗留超过一小时的 `running` 任务会自动释放。人工通过或淘汰关键词会取消其未完成任务。
+
+```env
+REVIEW_CRON=0 10 * * *
+REVIEW_BATCH=5
+```
+
+`find --watch` 和 `radar --watch` 都会按 `REVIEW_CRON` 自动处理到期任务。管理面板的“观察任务”页可查看原因、状态、下次时间和尝试次数。
+
+运行核心回归测试：
+
+```bash
+npm run test:workflow
+```
 
 ## 输出
 
@@ -216,7 +329,7 @@ DISABLE_SOURCES=reddit,github
 | extractor | `extract(items, ctx)` | 条目→候选词 | ngram |
 | analyzer | `analyze(kw, ctx)` | 一维分析（并行） | domain/competition/volume-trend/translate |
 | scorer | `score(kw, analyzed, ctx)` | 综合评分 | standard-scorer |
-| notifier | `notify(result, ctx)` | 输出（顺序执行） | markdown-report/telegram/sqlite-storage |
+| notifier | `notify(result, ctx)` | 独立输出（核心存储优先） | sqlite-storage/markdown-report/telegram |
 | ai-provider | `complete(prompt, ctx)` | AI 补全（第2期预留） | - |
 
 ## 评分规则

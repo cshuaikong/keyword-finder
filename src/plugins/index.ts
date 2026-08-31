@@ -26,7 +26,7 @@ import { translateAnalyzer } from './analyzers/translate.js';
 // 评分器（综合评分）
 import { standardScorer } from './scorers/standard.js';
 
-// 输出（报告 → 推送 → 存储，按顺序执行）
+// 输出（核心存储优先；报告和推送是可独立失败的旁路）
 import { markdownReportNotifier } from './notifiers/markdown-report.js';
 import { telegramNotifier } from './notifiers/telegram.js';
 import { sqliteStorageNotifier } from './notifiers/sqlite-storage.js';
@@ -49,7 +49,7 @@ export const builtinPlugins: Plugin[] = [
   // 评分器
   standardScorer,
   // 输出
+  sqliteStorageNotifier,
   markdownReportNotifier,
   telegramNotifier,
-  sqliteStorageNotifier,
 ];

@@ -17,47 +17,48 @@ const AUTHORITY_DOMAINS = [
   'reddit.com', 'twitter.com', 'facebook.com', 'instagram.com',
   'tiktok.com', 'medium.com', 'forbes.com', 'techcrunch.com',
   'microsoft.com', 'google.com', 'apple.com',
+  // 游戏攻略/媒体强站
+  'ign.com', 'gamesradar.com', 'gamerant.com', 'game8.co', 'gamepressure.com',
+  'powerpyx.com', 'neoseeker.com', 'mobalytics.gg', 'gamefaqs.gamespot.com',
+  'xboxachievements.com', 'trueachievements.com', 'playstationtrophies.org',
+  'fandom.com', 'steamcommunity.com', 'windowscentral.com', 'pcgamer.com',
 ];
 
 /**
  * 通过 Bing 搜索分析竞品情况
  * 注意：直接请求 Google 搜索可能被限流，Bing 对爬虫友好
  */
-async function analyzeCompetition(keyword: string): Promise<CompetitionInfo> {
+export async function analyzeCompetition(keyword: string): Promise<CompetitionInfo> {
   const topDomains: string[] = [];
   let hasAuthority = false;
   let resultCount = 0;
 
-  try {
-    // 使用 Bing 搜索（对爬虫友好，不会被限流/验证）
-    const searchUrl = `https://www.bing.com/search?q=${encodeURIComponent(keyword)}&count=10`;
-    const html = await fetchText(searchUrl);
+  // 使用 Bing 搜索（对爬虫友好，不会被限流/验证）
+  const searchUrl = `https://www.bing.com/search?q=${encodeURIComponent(keyword)}&count=10`;
+  const html = await fetchText(searchUrl);
 
-    const $ = cheerio.load(html);
+  const $ = cheerio.load(html);
 
     // Bing 搜索结果结构: <li class="b_algo"> 内含 <cite> 域名
-    $('li.b_algo cite').each((_: number, el: any) => {
-      const text = $(el).text().trim();
+  $('li.b_algo cite').each((_: number, el: any) => {
+    const text = $(el).text().trim();
       // 提取域名: https://www.example.com/path → example.com
       const domainMatch = text.match(/(?:https?:\/\/)?(?:www\.)?([^/\s>]+)/i);
-      if (domainMatch) {
-        const domain = domainMatch[1].toLowerCase();
+    if (domainMatch) {
+      const domain = domainMatch[1].toLowerCase();
         // 过滤无效域名
-        if (domain.includes('.') && !domain.includes('...') && !topDomains.includes(domain)) {
-          topDomains.push(domain);
-        }
+      if (domain.includes('.') && !domain.includes('...') && !topDomains.includes(domain)) {
+        topDomains.push(domain);
       }
-    });
+    }
+  });
 
     // 检查是否有权威站点
-    hasAuthority = topDomains.some(d =>
-      AUTHORITY_DOMAINS.some(auth => d.endsWith(auth) || d === auth)
-    );
+  hasAuthority = topDomains.some(d =>
+    AUTHORITY_DOMAINS.some(auth => d.endsWith(auth) || d === auth)
+  );
 
-    resultCount = topDomains.length;
-  } catch (err) {
-    console.log(`  ⚠ 竞品分析失败: ${keyword} - 使用默认评估`);
-  }
+  resultCount = topDomains.length;
 
   // 评估竞争难度
   const difficulty = evaluateDifficulty(topDomains, hasAuthority);
@@ -78,6 +79,9 @@ function evaluateDifficulty(topDomains: string[], hasAuthority: boolean): 'low' 
   if (hasAuthority) {
     return 'high';
   }
+
+  // 无可解析结果可能是页面结构变化/反爬，不能误判为蓝海。
+  if (topDomains.length === 0) return 'medium';
 
   // 搜索结果少于 3 个 → 低难度（蓝海）
   if (topDomains.length < 3) {
@@ -106,9 +110,20 @@ export const competitionAnalyzer: AnalyzerPlugin = {
   async analyze(keyword) {
     try {
       const competition = await analyzeCompetition(keyword.keyword);
-      return { competition };
-    } catch {
-      return {};
+      const noData = competition.topDomains.length === 0;
+      return {
+        competition,
+        evidence: [{
+          dimension: 'competition',
+          status: noData ? 'no-data' : 'success',
+          confidence: noData ? 25 : 90,
+          checkedAt: new Date(),
+          result: competition,
+        }],
+      };
+    } catch (err: any) {
+      console.log(`  ⚠ 竞品分析失败: ${keyword.keyword} - 使用默认评估`);
+      return { evidence: [{ dimension: 'competition', status: 'failed', confidence: 0, checkedAt: new Date(), error: err?.message || String(err) }] };
     }
   },
 };
