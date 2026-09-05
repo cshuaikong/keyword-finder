@@ -368,3 +368,48 @@ DISABLE_SOURCES=reddit,github
 2. **Google Trends 限流**：同一 IP 短时间内高频查询会被临时拦截（返回 HTML 而非 JSON），工具会自动跳过。每天定时跑一次最稳。
 3. **RDAP 被拦截**：rdap.org 对部分代理 IP 返回 403，此时域名检查自动回退为纯 DNS 判断（无法识别「已注册未建站」的域名）。
 4. **域名可用性仅供参考**：DNS+RDAP 只能判断大概率，注册前请在 Namecheap/Cloudflare 确认。
+
+
+## Google Trends RSS 定时发现
+
+独立来源 `trending-now` 使用官方 RSS `https://trends.google.com/trending/rss?geo=US`，
+无需 Google 登录、SerpAPI 或新增的非官方 Trends 客户端。默认美国，每轮结束后等待约 25–35 分钟；
+`npm run watch`（game/all）和 `radar --watch` 自动带起，也可单独运行：
+
+```bash
+npm ci
+npm run trending                 # 单次；尊重已有冷却，不强制重复请求
+npm run trending:watch           # 常驻，只采集/分类/入队，不发送 Telegram
+npm run trending -- --list       # 查看分类、理由、未知词、峰值档位（不联网）
+npm run review                  # 用已有验证流程处理到期候选（可能消耗配置的 API 预算）
+npm run test:trending
+npm run build
+```
+
+配置见 `.env.example` 中 `TRENDING_NOW_*`。默认 `US`；可选 `US,GB,JP,CA,AU`，
+每个地区通常每轮一次 HTTP 请求，多地区串行、至少相隔3秒。分类规则目前侧重英文，
+日本等地区仍能采集与存档，但自动分类召回率较低。所有进程应共用同一个 `DATA_DB_PATH`，
+否则各自的冷却记录不能互通。必须在持续开机的电脑或服务器上运行常驻命令；提交 GitHub 不会自动启动任务。
+
+处理步骤：
+
+1. 解析 RSS 关键词、搜索量档位、发布时间、相关新闻标题/来源/链接。
+2. 精确匹配已有 Steam 游戏池，或用游戏媒体域名、游戏平台和发售信息筛选相关词。
+3. `known-game` 是已知游戏名；`game-related` 仅为游戏相关候选，不能当作已核实游戏实体。
+   主播、赛事、每日答案等进入 `unknown`/`noise`，保留供人工检查。分类置信度是规则分数，未经统计校准，
+   与现有建站评分/验证置信度不同。无 AI 调用，也没有自动把新闻标题猜成游戏名。
+4. 对发布时间在最近24小时的候选，按规范化关键词+地区去重；新词、档位较上次入队翻倍、
+   或隔日重新出现时写入原词库、信号表及有批次限制的完整复查队列。相关实体和建站价值仍需核实，
+   不能仅凭 RSS 分类结果注册域名。已人工通过/淘汰/归档的词不会重新入队。
+
+数据库新增 `trending_history`（首次/最近观察、峰值、上次入队、分类证据）、
+`trending_snapshots`（全部主题快照，保留30天）、`trending_rss_cache` 和 `trending_poll_state`。
+未知词不会因无法分类而丢弃。已存在的业务表不做破坏性修改。
+
+限流处理：同一 SQLite 的原子领取防止重叠；失败后约1、2、4小时指数退避，基准上限24小时；
+尊重更长的 `Retry-After`。403/429 立即停止本轮剩余地区，不换接口重试。重启仍遵守持久化冷却。
+只有服务器返回 ETag/Last-Modified 才发送条件请求，不能假设 Google 总是支持304。
+
+数据边界：RSS 仅是有限热词池，不保证包含网页游戏分类全部趋势；不能靠本地分类找回缺失条目。
+搜索量是档位下限，不是精确计数；档位翻倍不是 Google 官方涨幅；RSS 发布时间不等于趋势开始时间；
+从列表消失也不能直接判定热度结束。采集过程不使用付费 API、不抓取相关新闻正文，不发通知。
