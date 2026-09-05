@@ -40,6 +40,10 @@ export interface Config {
   disableSources: string[]; // 禁用的数据源列表（旧配置，向后兼容）
   disablePlugins: string[]; // 禁用插件列表（新配置，适用于所有插件类型）
   dbPath: string; // SQLite 数据库文件路径
+  trendingNowEnabled: boolean;
+  trendingNowGeos: string[];
+  trendingNowIntervalMs: number;
+  trendingNowJitterMs: number;
 }
 
 export const config: Config = {
@@ -71,4 +75,9 @@ export const config: Config = {
   // 插件禁用列表：如 DISABLE_PLUGINS=telegram,sitemap 可禁用任意类型的插件
   disablePlugins: (process.env.DISABLE_PLUGINS || '').split(',').map(s => s.trim()).filter(Boolean),
   dbPath: process.env.DATA_DB_PATH || resolve(__dirname, '../data/keywords.db'),
+  trendingNowEnabled: process.env.TRENDING_NOW_ENABLED !== 'false',
+  trendingNowGeos: [...new Set((process.env.TRENDING_NOW_GEOS || 'US').split(',')
+    .map(s => s.trim().toUpperCase()).filter(s => /^[A-Z]{2}$/.test(s)))],
+  trendingNowIntervalMs: Math.max(30, nonNegativeInt(process.env.TRENDING_NOW_INTERVAL_MINUTES, 30)) * 60000,
+  trendingNowJitterMs: Math.min(5, nonNegativeInt(process.env.TRENDING_NOW_JITTER_MINUTES, 5)) * 60000,
 };

@@ -9,6 +9,7 @@ import type { Plugin } from '../core/plugin.js';
 
 // 数据源（并行抓取）
 import { trendsSource } from './sources/trends.js';
+import { trendingNowSource } from './sources/trending-now.js';
 import { redditSource } from './sources/reddit.js';
 import { hackerNewsSource } from './sources/hackernews.js';
 import { githubTrendingSource } from './sources/github.js';
@@ -35,6 +36,7 @@ import { sqliteStorageNotifier } from './notifiers/sqlite-storage.js';
 export const builtinPlugins: Plugin[] = [
   // 数据源
   trendsSource,
+  trendingNowSource,
   redditSource,
   hackerNewsSource,
   githubTrendingSource,

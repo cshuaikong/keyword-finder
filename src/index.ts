@@ -48,6 +48,8 @@ import { runGameRadar } from './modules/game-radar.js';
 import { runScheduledReviews } from './modules/reviews.js';
 import { startWebUi } from './modules/webui.js';
 import { builtinPlugins } from './plugins/index.js';
+import { pollTrendingNow, startTrendingNowWatcher } from './modules/trending-now.js';
+import { listTrendingHistory } from './core/trending-store.js';
 
 // 注册所有内置插件（新增插件只需加入 plugins/index.ts 的列表）
 registry.registerAll(builtinPlugins);
@@ -240,6 +242,7 @@ async function main() {
 
         // 管理面板随雷达常驻模式自动带起
         await startWebUi();
+        startTrendingNowWatcher();
 
         // 启动即跑一轮
         if (runBoth || options.innerOnly) await runInnerLoop();
@@ -293,6 +296,20 @@ async function main() {
       // 状态摘要
       const pending = countUnverifiedWords();
       console.log(chalk.gray(`\n📋 未验证词队列: 还剩 ${pending} 个待外环处理`));
+    });
+
+  program
+    .command('trending-now')
+    .description('RSS 热词采集与游戏分类；约30分钟抖动调度，失败自动退避')
+    .option('--watch', '持续采集（只入队，不启动其他雷达或发送通知）')
+    .option('--list', '查看最近采集记录、分类依据及未知词（不联网）')
+    .action(async (options: { watch?: boolean; list?: boolean }) => {
+      if (options.list) console.table(listTrendingHistory());
+      else if (options.watch) startTrendingNowWatcher();
+      else {
+        const result = await pollTrendingNow();
+        if (result.status === 'failed' || result.status === 'partial') process.exitCode = 1;
+      }
     });
 
   program
@@ -354,6 +371,7 @@ async function main() {
 
       // 管理面板随常驻模式自动带起
       await startWebUi();
+      if (category !== 'ai') startTrendingNowWatcher();
 
       // 先立即运行一次
       await executeAndReport(category);
